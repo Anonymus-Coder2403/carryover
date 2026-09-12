@@ -86,8 +86,9 @@ create table if not exists caps (
 );
 ```
 
-Path `/tmp/carryover.db`, override with `DB_PATH`. Render's filesystem is ephemeral, so
-a redeploy wipes saved capsules. Accepted for the hackathon. Do not redeploy after 13:40.
+Path `/tmp/carryover.db` by default, overridden on Render with `DB_PATH=/var/data/carryover.db`
+on a 1 GB persistent disk. Capsules survive deploys. The `emb` column is added by a pragma
+check in `db()` so old rows are not a migration problem.
 
 ## Low level design
 
@@ -105,6 +106,8 @@ a redeploy wipes saved capsules. Accepted for the hackathon. Do not redeploy aft
 | `GET /healthz` | `{ok, key}` where `key` reports whether GEMINI_API_KEY is set. Proves presence, not that the model accepts it. Only a real `POST /api/capsule` proves the core action |
 | `POST /api/verify/{id}` | body `{transcript}`, one model call, returns `{checks, verdict, passed, total}`. Transcript is not stored |
 | `GET /api/search` | query `q`, embeds it, cosine scan over stored capsules, top five |
+| `POST /mcp` | MCP streamable HTTP, protocol 2025-11-25, stateless JSON. Handles `initialize`, `ping`, `tools/list`, `tools/call`, 202 for notifications, JSON-RPC error for anything else. `GET /mcp` is 405 |
+| `tool(name, args, base)` | `save_capsule(transcript)` returns id, share link, model and capsule. `load_capsule(id or query, target)` returns the resume prompt or search hits |
 | `route(text)` | picks the lite or full model by transcript length |
 | `embed(text)`, `cosine(a, b)` | Gemini embedding via urllib, pure Python cosine |
 | `GET /` and `GET /c/{id}` | serve `index.html`, the second substitutes `__PRELOAD__` |
@@ -205,8 +208,9 @@ non fatal, the capsule is stored with a null vector and skipped by search.
 
 ## Deliberately out of scope
 
-MCP server. Browser extension. Accounts and auth. Capsule chaining across sessions. Team
-sharing. `conversations.json` parsing. Vector search. Postgres. Anything with a queue.
+Browser extension. Accounts and auth. Capsule chaining across sessions. Team sharing.
+Postgres. Anything with a queue. The MCP server, export parsing and capsule search were
+out of scope for the demo and shipped the same afternoon once the demo build was frozen.
 
 Reasons are in RESEARCH.md. The short version: MCP cannot be judged in a browser, and the
 rubric awards 20 points for a judge opening a Render URL and using the product directly.

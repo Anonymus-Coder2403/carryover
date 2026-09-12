@@ -14,10 +14,11 @@
 - Model names live in env vars, never in code. Test a model name with a real POST before
   it goes into the Render panel, the model list is per key and names get retired.
 - No browser storage APIs anywhere.
-- Known ceiling, deliberate: the database lives at /tmp on Render's ephemeral disk, so every
-  deploy destroys every capsule and every shared link. Accepted for the hackathon. The
-  upgrade path is a Render persistent disk with DB_PATH pointing at it, no code change.
-  Do not deploy while anyone has a capsule link they still need.
+- The database lives on a Render persistent disk at /var/data. Before 14:49 on 12 Sep 2026
+  it was on /tmp and every deploy destroyed every capsule. That ceiling is closed, with no
+  code change, by DB_PATH pointing at the disk.
+- The MCP endpoint has no auth. Capsules are already public by link, so the endpoint
+  exposes nothing the website does not. Add OAuth before capsules become private.
 - Transcripts are never written to the database. Only capsules and their embeddings are.
   The fidelity check receives the transcript from the client and does not store it.
   This is a claim made on stage, so it must stay true in code.

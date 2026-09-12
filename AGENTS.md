@@ -22,8 +22,13 @@ Live at https://carryover-kxq7.onrender.com from https://github.com/Anonymus-Cod
 Deployed by Manual Deploy only. Pushes do not auto deploy, the service was connected as a
 public repo rather than through the GitHub app. Verify what is actually live by byte comparing
 the served page against `git show <sha>:index.html`, never from memory of having pushed.
-Every deploy wipes `/tmp/carryover.db` and destroys every saved capsule, including any
-fallback link someone has open.
+Since 14:49 on 12 Sep 2026 the database lives on a 1 GB Render persistent disk at
+`/var/data/carryover.db` via `DB_PATH`, proven by making a capsule, redeploying, and
+loading it again. Deploys no longer destroy data. Zero downtime deploys are off because
+of the disk, so every deploy has a short outage.
+
+MCP server at `POST /mcp`, streamable HTTP, stateless, plain JSON, two tools:
+`save_capsule` and `load_capsule`. Same process, same functions, no SDK.
 
 Shipped and verified on the live URL: capsule extraction, multi target rehydration, the
 token meter and health verdict (P1), the fidelity check (P2), a length based model router,
@@ -45,9 +50,8 @@ gemini-3.5-flash-lite returned malformed JSON in testing, do not use either.
   every Gemini call, generation and embeddings, so there is no SDK version risk.
 - uv only. `uv lock` after any pin change, `uv run --frozen` locally. Never pip, never
   `uv pip`. Render builds with `uv sync --frozen` and starts with `uv run --frozen uvicorn`.
-- Postgres stays out. SQLite with a linear cosine scan is enough until there are
-  thousands of capsules. The disk being ephemeral is the ceiling, and a Render persistent
-  disk mounted at the DB path is the upgrade, not a database change.
+- Postgres stays out. SQLite on the persistent disk with a linear cosine scan is enough
+  until there are thousands of capsules.
 - The dependency cap held through every feature. Cosine search is pure Python, no numpy.
   Keep it that way until a measurement says otherwise.
 - Deploy after every completed step. A broken URL at 13:45 scores zero on 20 points.

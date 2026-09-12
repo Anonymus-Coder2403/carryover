@@ -21,6 +21,12 @@ promise.
 
 Your transcript is never written to the database. Only the capsule is.
 
+## Use it from an assistant
+
+Carryover is also an MCP server. Add `https://carryover-kxq7.onrender.com/mcp` as a
+custom connector and the assistant gets two tools: `save_capsule` when a chat is getting
+long, and `load_capsule` by id or by a query about what the work was. No copy paste.
+
 ## Run it locally
 
 Needs uv and a Gemini API key.

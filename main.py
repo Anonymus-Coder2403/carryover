@@ -1,6 +1,6 @@
 import os, json, sqlite3, secrets, re, urllib.request, urllib.error
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 DB = os.environ.get("DB_PATH", "/tmp/carryover.db")
@@ -243,6 +243,65 @@ def search(q: str):
         hits.append({"id": cid, "title": cap.get("title", ""), "goal": cap.get("goal", ""), "score": round(cosine(qe, json.loads(emb)), 3)})
     hits.sort(key=lambda h: -h["score"])
     return {"hits": hits[:5]}
+
+
+TOOLS = [
+    {"name": "save_capsule",
+     "description": "Compress a chat transcript into a context capsule. Returns the capsule id, a share link and the capsule itself. The transcript is never stored.",
+     "inputSchema": {"type": "object", "properties": {"transcript": {"type": "string", "description": "The full chat, both sides"}}, "required": ["transcript"]}},
+    {"name": "load_capsule",
+     "description": "Load a saved capsule as a resume prompt by id, or search saved capsules by meaning with a query. Give one of id or query.",
+     "inputSchema": {"type": "object", "properties": {
+         "id": {"type": "string", "description": "Capsule id from save_capsule"},
+         "query": {"type": "string", "description": "What the work was about, used for search when id is not known"},
+         "target": {"type": "string", "enum": ["claude", "chatgpt", "cursor"], "description": "Prompt dialect, default claude"}}}},
+]
+
+
+def tool(name, a, base):
+    if name == "save_capsule":
+        r = make(In(transcript=a.get("transcript", "")))
+        return json.dumps({"id": r["id"], "share": base + "/c/" + r["id"], "model": r["model"], "capsule": r["capsule"]}, indent=1)
+    if name == "load_capsule":
+        if a.get("id"):
+            return render(load(a["id"]), a.get("target", "claude"), 2000)
+        if a.get("query"):
+            return json.dumps(search(a["query"]), indent=1)
+        raise HTTPException(400, "Give an id or a query")
+    raise HTTPException(404, "Unknown tool: %s" % name)
+
+
+@app.post("/mcp")
+async def mcp(req: Request):
+    try:
+        m = await req.json()
+    except ValueError:
+        return JSONResponse({"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": None}, 400)
+    method, rid, params = m.get("method", ""), m.get("id"), m.get("params") or {}
+    if method.startswith("notifications/"):
+        return Response(status_code=202)
+    if method == "initialize":
+        result = {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "carryover", "version": "0.1.0"},
+                  "instructions": "Use save_capsule when a conversation is getting long and the user wants to continue elsewhere. Use load_capsule to resume from a capsule id or find one by query."}
+    elif method == "ping":
+        result = {}
+    elif method == "tools/list":
+        result = {"tools": TOOLS}
+    elif method == "tools/call":
+        try:
+            text = tool(params.get("name"), params.get("arguments") or {}, str(req.base_url).rstrip("/"))
+            result = {"content": [{"type": "text", "text": text}], "isError": False}
+        except HTTPException as e:
+            result = {"content": [{"type": "text", "text": e.detail}], "isError": True}
+    else:
+        return JSONResponse({"jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found: %s" % method}, "id": rid})
+    return JSONResponse({"jsonrpc": "2.0", "result": result, "id": rid})
+
+
+@app.get("/mcp")
+def mcp_get():
+    return Response(status_code=405)
 
 
 @app.get("/healthz")
