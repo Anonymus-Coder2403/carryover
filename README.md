@@ -9,7 +9,7 @@ Built in one afternoon at the Airtribe x Render Ship Room hackathon, Bengaluru, 
 
 ## The one core action
 
-Paste a long AI chat. Carryover shows an estimated health verdict as you paste, then
+Paste a long AI chat, or drop in a ChatGPT or Claude data export and pick the conversation. Carryover shows an estimated health verdict as you paste, then
 compresses the chat into a capsule: goal, state, decisions with reasons, approaches
 already ruled out, constraints, open threads and the single next action. It renders that
 capsule as a resume prompt for Claude, ChatGPT or Cursor. Copy it into a fresh session and
@@ -21,6 +21,10 @@ promise.
 
 Your transcript is never written to the database. Only the capsule is.
 
+When the new session fills up too, make the next capsule with "Chain from current capsule"
+ticked. The child carries every decision and ruled out approach from the parent, so session
+three knows what session one decided.
+
 ## Use it from an assistant
 
 Carryover is also an MCP server. Add `https://carryover-kxq7.onrender.com/mcp` as a
@@ -28,6 +32,10 @@ custom connector with no sign in and one request header, `Authorization` set to
 `Bearer <your token>`. The assistant gets two tools: `save_capsule` when a chat is getting
 long, and `load_capsule` by id or by a query about what the work was. Capsules saved this
 way are private to your token. No copy paste.
+
+ChatGPT custom connectors cannot send a header, so there use
+`https://carryover-kxq7.onrender.com/mcp/<your token>` with No Auth. That URL is your
+token, keep it private.
 
 ## Run it locally
 

@@ -14,6 +14,22 @@ TOKENS = [t.strip() for t in os.environ.get("MCP_TOKENS", "").split(",") if t.st
 app = FastAPI()
 
 
+class PathToken:
+    """Accepts /mcp/<token> for clients that cannot send headers, and hides the token from access logs."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"].startswith("/mcp/"):
+            scope["path_token"] = scope["path"][5:].strip("/")
+            scope["path"] = "/mcp"
+            scope["raw_path"] = b"/mcp"
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(PathToken)
+
+
 def db():
     c = sqlite3.connect(DB)
     c.execute("create table if not exists caps (id text primary key, data text, created text default current_timestamp)")
@@ -22,6 +38,8 @@ def db():
         c.execute("alter table caps add column emb text")
     if "owner" not in cols:
         c.execute("alter table caps add column owner text")
+    if "parent" not in cols:
+        c.execute("alter table caps add column parent text")
     return c
 
 
@@ -56,6 +74,14 @@ Return only JSON matching this shape, no prose, no code fences:
 """ + SCHEMA + """
 
 TRANSCRIPT:
+"""
+
+CHAIN = """
+
+PRIOR CAPSULE from the session before this one. Carry forward every decision, ruled out
+approach, constraint and literal from it unless this transcript explicitly reverses it. The
+new capsule must stand alone: someone reading only it must know everything from both.
+
 """
 
 
@@ -98,7 +124,7 @@ def embed(text):
 
 def owner_of(req):
     auth = req.headers.get("authorization", "")
-    tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    tok = auth[7:].strip() if auth.lower().startswith("bearer ") else req.scope.get("path_token", "")
     for t in TOKENS:
         if tok and hmac.compare_digest(t, tok):
             return hashlib.sha256(tok.encode()).hexdigest()[:12]
@@ -178,26 +204,34 @@ def render(c, target, budget):
 
 class In(BaseModel):
     transcript: str
+    parent: str | None = None
 
 
-def make_capsule(transcript, owner=None):
+def make_capsule(transcript, owner=None, parent=None):
     t = transcript.strip()
     if len(t) < 80:
         raise HTTPException(400, "Paste more of the conversation. At least a few exchanges.")
+    prior = load(parent, owner) if parent else None
     model = route(t)
-    cap = blank(gemini(EXTRACT + t[:120000], model))
+    prompt = EXTRACT + t[:120000] + (CHAIN + json.dumps(prior) if prior else "")
+    cap = blank(gemini(prompt, model))
+    # ponytail: regex backstop because models drop long encoded urls, capped at 40 to bound prompt size
+    seen = set(cap["literals"])
+    for u in dict.fromkeys(re.findall(r"https?://[^\s\"'<>)\]]+", t[:120000])):
+        if u not in seen and len(cap["literals"]) < 40:
+            cap["literals"].append(u)
     cid = secrets.token_urlsafe(6)
     emb = embed(json.dumps(cap))
     c = db()
-    c.execute("insert into caps (id, data, emb, owner) values (?, ?, ?, ?)", (cid, json.dumps(cap), json.dumps(emb) if emb else None, owner))
+    c.execute("insert into caps (id, data, emb, owner, parent) values (?, ?, ?, ?, ?)", (cid, json.dumps(cap), json.dumps(emb) if emb else None, owner, parent if prior else None))
     c.commit()
     c.close()
-    return {"id": cid, "capsule": cap, "model": model}
+    return {"id": cid, "capsule": cap, "model": model, "parent": parent if prior else None}
 
 
 @app.post("/api/capsule")
 def make(i: In):
-    return make_capsule(i.transcript)
+    return make_capsule(i.transcript, None, i.parent)
 
 
 def load(cid, owner=None):
@@ -213,7 +247,10 @@ def load(cid, owner=None):
 
 @app.get("/api/capsule/{cid}")
 def get(cid: str):
-    return {"id": cid, "capsule": load(cid)}
+    c = db()
+    r = c.execute("select parent from caps where id=?", (cid,)).fetchone()
+    c.close()
+    return {"id": cid, "capsule": load(cid), "parent": r[0] if r else None}
 
 
 @app.get("/api/resume/{cid}", response_class=PlainTextResponse)
@@ -276,7 +313,9 @@ def search(q: str):
 TOOLS = [
     {"name": "save_capsule",
      "description": "Compress a chat transcript into a private context capsule owned by this connector. Returns the capsule id and the capsule itself. The transcript is never stored.",
-     "inputSchema": {"type": "object", "properties": {"transcript": {"type": "string", "description": "The full chat, both sides"}}, "required": ["transcript"]}},
+     "inputSchema": {"type": "object", "properties": {
+         "transcript": {"type": "string", "description": "The full chat, both sides"},
+         "parent": {"type": "string", "description": "Optional id of the previous capsule in this line of work. The new capsule carries its decisions forward."}}, "required": ["transcript"]}},
     {"name": "load_capsule",
      "description": "Load a saved capsule as a resume prompt by id, or search saved capsules by meaning with a query. Give one of id or query.",
      "inputSchema": {"type": "object", "properties": {
@@ -288,8 +327,8 @@ TOOLS = [
 
 def tool(name, a, owner):
     if name == "save_capsule":
-        r = make_capsule(a.get("transcript", ""), owner)
-        return json.dumps({"id": r["id"], "model": r["model"], "private": True, "capsule": r["capsule"]}, indent=1)
+        r = make_capsule(a.get("transcript", ""), owner, a.get("parent"))
+        return json.dumps({"id": r["id"], "parent": r["parent"], "model": r["model"], "private": True, "capsule": r["capsule"]}, indent=1)
     if name == "load_capsule":
         if a.get("id"):
             return render(load(a["id"], owner), a.get("target", "claude"), 2000)

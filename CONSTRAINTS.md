@@ -21,7 +21,10 @@
   Capsules saved through MCP are owned by the hash of the token that saved them, are
   invisible to the website and to every other token, and get no share link. Capsules
   made on the website stay public by link. Tokens live in Render's env panel and in the
-  Claude connector's request header, never in a file, a commit or a chat.
+  Claude connector's request header, never in a file, a commit or a chat. Clients that
+  cannot send headers use `/mcp/<token>` instead. The middleware masks that path before
+  it is logged, so the token is never written to Render's logs either. Treat that URL
+  as a secret, it is the token.
 - Transcripts are never written to the database. Only capsules and their embeddings are.
   The fidelity check receives the transcript from the client and does not store it.
   This is a claim made on stage, so it must stay true in code.

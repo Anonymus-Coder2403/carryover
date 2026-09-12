@@ -65,11 +65,13 @@ h2{font-family:Newsreader,Georgia,serif;font-weight:600;font-size:22px;margin:0 
     <div>
       <label for="t">Conversation to carry over</label>
       <input type="file" id="file" accept=".txt,.md,.json" style="font-size:13px;margin:0 0 8px">
+      <select id="pick" hidden style="width:100%;margin:0 0 8px;padding:8px;border:1px solid var(--rule);background:var(--card);font:inherit"></select>
       <textarea id="t" placeholder="Paste the chat here, both sides of it."></textarea>
       <div class="meter" id="meter"><div class="bar"><i></i></div><span>Paste a chat to see its health. Token counts are estimated.</span></div>
       <div class="row">
         <button class="go" id="go">Make capsule</button>
         <button id="ex">Use a sample chat</button>
+        <label id="chain" hidden style="font-weight:400;font-size:14px;margin:0"><input type="checkbox" id="chainbox" checked> Chain from current capsule</label>
         <span id="msg" class="meta"></span>
       </div>
     </div>
@@ -133,30 +135,46 @@ function meter(){
 }
 let tm; $("#t").oninput = () => { clearTimeout(tm); tm = setTimeout(meter, 150); };
 
-function parseExport(text){
-  let j; try { j = JSON.parse(text); } catch (e) { return text; }
-  const convs = Array.isArray(j) ? j : [j];
+const CAP = 120000;
+function flatten(c){
   const out = [];
-  for (const c of convs) {
-    if (c && c.mapping) {
-      const nodes = Object.values(c.mapping).filter(n => n.message && n.message.content && n.message.content.parts)
-        .sort((a, b) => (a.message.create_time || 0) - (b.message.create_time || 0));
-      for (const n of nodes) {
-        const txt = n.message.content.parts.filter(p => typeof p === "string").join("\n").trim();
-        if (txt) out.push((n.message.author.role === "user" ? "User: " : "Assistant: ") + txt);
-      }
-    } else if (c && c.role && c.content) {
-      out.push((c.role === "user" ? "User: " : "Assistant: ") + (typeof c.content === "string" ? c.content : JSON.stringify(c.content)));
-    } else if (c && Array.isArray(c.messages)) {
-      for (const m of c.messages) out.push((m.role === "user" ? "User: " : "Assistant: ") + (typeof m.content === "string" ? m.content : JSON.stringify(m.content)));
-    }
+  const line = (role, txt) => { txt = (txt || "").trim(); if (txt) out.push((role === "user" || role === "human" ? "User: " : "Assistant: ") + txt); };
+  if (c && c.mapping) {
+    Object.values(c.mapping).filter(n => n.message && n.message.content && n.message.content.parts)
+      .sort((a, b) => (a.message.create_time || 0) - (b.message.create_time || 0))
+      .forEach(n => line(n.message.author.role, n.message.content.parts.filter(p => typeof p === "string").join("\n")));
+  } else if (c && Array.isArray(c.chat_messages)) {
+    c.chat_messages.forEach(m => line(m.sender, m.text || (m.content || []).map(x => x.text || "").join("\n")));
+  } else if (c && Array.isArray(c.messages)) {
+    c.messages.forEach(m => line(m.role, typeof m.content === "string" ? m.content : JSON.stringify(m.content)));
+  } else if (c && c.role && c.content) {
+    line(c.role, typeof c.content === "string" ? c.content : JSON.stringify(c.content));
   }
-  return out.length ? out.join("\n") : text;
+  return out.join("\n");
+}
+function conversations(text){
+  let j; try { j = JSON.parse(text); } catch (e) { return null; }
+  const list = Array.isArray(j) ? j : [j];
+  const convs = list.filter(c => c && (c.mapping || c.chat_messages || c.messages || c.role));
+  if (!convs.length) return null;
+  const when = c => c.update_time ? c.update_time * 1000 : (Date.parse(c.updated_at || c.created_at || "") || 0);
+  return convs.map(c => ({title: c.title || c.name || "Untitled", when: when(c), text: flatten(c)}))
+    .filter(c => c.text).sort((a, b) => b.when - a.when);
+}
+function place(text, label){
+  let note = "";
+  if (text.length > CAP) { note = " Kept the last " + CAP.toLocaleString() + " of " + text.length.toLocaleString() + " characters, the oldest part is dropped."; text = text.slice(-CAP); }
+  $("#t").value = text; meter(); msg("Loaded " + label + "." + note + " Make the capsule.");
 }
 $("#file").onchange = async () => {
   const f = $("#file").files[0]; if (!f) return;
-  $("#t").value = parseExport(await f.text()); meter();
-  msg("Loaded " + f.name + ". Make the capsule.");
+  const raw = await f.text(), convs = conversations(raw);
+  const pick = $("#pick"); pick.hidden = true; pick.innerHTML = "";
+  if (!convs) return place(raw, f.name);
+  if (convs.length === 1) return place(convs[0].text, f.name);
+  convs.forEach((c, i) => { const o = document.createElement("option"); o.value = i; o.textContent = c.title + " (" + Math.ceil(c.text.length / 4).toLocaleString() + " tokens)"; pick.appendChild(o); });
+  pick.hidden = false; pick.onchange = () => place(convs[+pick.value].text, convs[+pick.value].title);
+  place(convs[0].text, convs[0].title + ", the most recent of " + convs.length);
 };
 
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
@@ -171,11 +189,13 @@ $("#go").onclick = async () => {
   if (transcript.length < 80) return msg("Paste a bit more of the chat first.", true);
   $("#go").disabled = true; msg("Reading the conversation.");
   try {
+    const parent = cid && $("#chainbox").checked ? cid : null;
     const r = await fetch("/api/capsule", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({transcript})});
+      body: JSON.stringify({transcript, parent})});
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || "Something went wrong.");
-    cid = d.id; cap = d.capsule; msg("Capsule made with " + (d.model || "the default model") + ".");
+    cid = d.id; cap = d.capsule; msg("Capsule made with " + (d.model || "the default model") + (d.parent ? ", chained from " + d.parent : "") + ".");
+    $("#chain").hidden = false;
     $("#share").innerHTML = 'Shareable link: <a href="/c/' + cid + '">' + location.origin + '/c/' + cid + '</a>';
     await pull();
   } catch (e) { msg(e.message, true); }
@@ -240,7 +260,7 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>]/g, c => ({"&":"&amp;
   if (pre.indexOf("PRELOAD") > -1) return;
   const r = await fetch("/api/capsule/" + pre);
   if (!r.ok) return;
-  const d = await r.json(); cid = d.id; cap = d.capsule; await pull();
+  const d = await r.json(); cid = d.id; cap = d.capsule; $("#chain").hidden = false; await pull();
 })();
 </script>
 </body>

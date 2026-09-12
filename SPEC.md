@@ -107,10 +107,12 @@ check in `db()` so old rows are not a migration problem.
 | `POST /api/verify/{id}` | body `{transcript}`, one model call, returns `{checks, verdict, passed, total}`. Transcript is not stored |
 | `GET /api/search` | query `q`, embeds it, cosine scan over stored capsules, top five |
 | `POST /mcp` | MCP streamable HTTP, protocol 2025-11-25, stateless JSON. 401 with `WWW-Authenticate: Bearer` unless the bearer token matches an entry in `MCP_TOKENS`. Handles `initialize`, `ping`, `tools/list`, `tools/call`, 202 for notifications, JSON-RPC error for anything else. `GET /mcp` is 405 |
-| `owner_of(req)` | constant time match of the bearer token against `MCP_TOKENS`, returns a 12 character hash as the owner id, or None |
+| `owner_of(req)` | constant time match of the bearer token, or the token from a `/mcp/<token>` path, against `MCP_TOKENS`, returns a 12 character hash as the owner id, or None |
+| `PathToken` middleware | rewrites `/mcp/<token>` to `/mcp` before routing and before uvicorn logs the path, stashing the token in the ASGI scope. Exists for clients that cannot send headers, ChatGPT custom connectors offer only OAuth or nothing. Verified that the token never appears in the access log |
 | `make_capsule(t, owner)`, `search_caps(q, owner)` | the internals. The `/api/capsule` and `/api/search` routes call them with no owner, so the web can only make and see public capsules. `load(cid, owner)` returns 404 for a capsule whose owner does not match |
 | `tool(name, args, base)` | `save_capsule(transcript)` returns id, share link, model and capsule. `load_capsule(id or query, target)` returns the resume prompt or search hits |
 | `route(text)` | picks the lite or full model by transcript length |
+| `make_capsule(t, owner, parent)` | extraction, with the parent capsule appended as prior context when given |
 | `embed(text)`, `cosine(a, b)` | Gemini embedding via urllib, pure Python cosine |
 | `GET /` and `GET /c/{id}` | serve `index.html`, the second substitutes `__PRELOAD__` |
 
@@ -203,12 +205,29 @@ are the point of the product, so the router defaults to off.
 **Literals.** The capsule has a `literals` list for every exact URL, id, file path, command,
 env var name, model name and config string, verbatim. It exists because a resumed session
 asked for "the provided URLs" that the capsule had paraphrased away. It renders as its own
-block in every dialect and is cut only at the short budget.
+block in every dialect and is cut only at the short budget. After extraction a regex adds
+every `http(s)://` URL from the transcript that the model left out, capped at 40 entries,
+because models copy long encoded URLs unreliably and a regex does not.
 
-**Export file parser.** Client side only, `parseExport` in `index.html`. Accepts a
-`.txt`, `.md` or `.json` file. Understands ChatGPT `conversations.json` (the `mapping`
-tree, ordered by `create_time`), a flat `messages` array, or a single role and content
-object. Anything else is treated as plain text. Not yet tested on a full sized export.
+**Capsule chaining.** `POST /api/capsule` and the MCP `save_capsule` tool accept an
+optional `parent` capsule id. The parent is loaded with the caller's ownership, so a bad,
+private or foreign id is a 404 before any model call. The extraction prompt then receives
+the parent capsule as prior context with the instruction to carry every decision, ruled
+out approach, constraint and literal forward unless the new transcript reverses it, so the
+child stands alone. The row stores `parent`, `GET /api/capsule/{id}` returns it, and the
+page shows a "Chain from current capsule" box once a capsule is loaded. Measured on the
+sample chat plus a follow up: the child kept both rejections and both constraints from the
+parent and added the new decisions.
+
+**Export file parser.** Client side only, `conversations` and `flatten` in `index.html`.
+Accepts a `.txt`, `.md` or `.json` file. Understands a full ChatGPT `conversations.json`
+(array of conversations, each a `mapping` tree ordered by `create_time`), a full Claude
+export (array with `name` and `chat_messages`), a flat `messages` array, or a single role
+and content object. Anything else is plain text. With more than one conversation a select
+appears, newest first with an estimated token count per entry, and the newest is loaded by
+default. Text over 120,000 characters keeps the last 120,000, the oldest part is dropped,
+and the note says so, because the recent end is what a resume needs. Unit checked in node
+against synthetic ChatGPT, Claude and messages exports.
 
 **Capsule search.** `POST /api/capsule` embeds the capsule JSON with `GEMINI_EMBED` and
 stores the vector in an `emb` column added by a pragma check in `db()`. `GET

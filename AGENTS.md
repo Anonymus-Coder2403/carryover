@@ -30,14 +30,16 @@ of the disk, so every deploy has a short outage.
 MCP server at `POST /mcp`, streamable HTTP, stateless, plain JSON, two tools:
 `save_capsule` and `load_capsule`. Same process, same functions, no SDK. Requires
 `Authorization: Bearer <token>` where the token is one of the comma separated values in
-`MCP_TOKENS`. Each token is a separate owner with its own private capsules. Web routes
+`MCP_TOKENS`, or the same token as the last path segment, `/mcp/<token>`, for clients
+that cannot send headers. Each token is a separate owner with its own private capsules. Web routes
 never accept an owner, the split between `make_capsule` and the `/api/capsule` route is
 what enforces that.
 
 Shipped and verified on the live URL: capsule extraction, multi target rehydration, the
 token meter and health verdict (P1), the fidelity check (P2), a length based model router,
-a client side file parser for ChatGPT and Claude exports, and cosine search over saved
-capsules using Gemini embeddings.
+a client side file parser for ChatGPT and Claude exports, cosine search over saved
+capsules using Gemini embeddings, a verbatim literals list with a regex URL backstop, and
+capsule chaining through an optional parent id on both the web and MCP paths.
 
 Models are env vars. `GEMINI_MODEL` (default gemini-3.6-flash) handles extraction and the
 fidelity check. `GEMINI_LITE` (default gemini-3.1-flash-lite) is used only for transcripts
