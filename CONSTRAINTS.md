@@ -17,8 +17,11 @@
 - The database lives on a Render persistent disk at /var/data. Before 14:49 on 12 Sep 2026
   it was on /tmp and every deploy destroyed every capsule. That ceiling is closed, with no
   code change, by DB_PATH pointing at the disk.
-- The MCP endpoint has no auth. Capsules are already public by link, so the endpoint
-  exposes nothing the website does not. Add OAuth before capsules become private.
+- The MCP endpoint requires a bearer token from `MCP_TOKENS`, compared in constant time.
+  Capsules saved through MCP are owned by the hash of the token that saved them, are
+  invisible to the website and to every other token, and get no share link. Capsules
+  made on the website stay public by link. Tokens live in Render's env panel and in the
+  Claude connector's request header, never in a file, a commit or a chat.
 - Transcripts are never written to the database. Only capsules and their embeddings are.
   The fidelity check receives the transcript from the client and does not store it.
   This is a claim made on stage, so it must stay true in code.

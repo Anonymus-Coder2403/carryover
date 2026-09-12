@@ -28,7 +28,11 @@ loading it again. Deploys no longer destroy data. Zero downtime deploys are off 
 of the disk, so every deploy has a short outage.
 
 MCP server at `POST /mcp`, streamable HTTP, stateless, plain JSON, two tools:
-`save_capsule` and `load_capsule`. Same process, same functions, no SDK.
+`save_capsule` and `load_capsule`. Same process, same functions, no SDK. Requires
+`Authorization: Bearer <token>` where the token is one of the comma separated values in
+`MCP_TOKENS`. Each token is a separate owner with its own private capsules. Web routes
+never accept an owner, the split between `make_capsule` and the `/api/capsule` route is
+what enforces that.
 
 Shipped and verified on the live URL: capsule extraction, multi target rehydration, the
 token meter and health verdict (P1), the fidelity check (P2), a length based model router,

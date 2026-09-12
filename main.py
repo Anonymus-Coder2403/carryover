@@ -1,4 +1,4 @@
-import os, json, sqlite3, secrets, re, urllib.request, urllib.error
+import os, json, sqlite3, secrets, re, hmac, hashlib, urllib.request, urllib.error
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse, Response
 from pydantic import BaseModel
@@ -9,6 +9,7 @@ MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 LITE = os.environ.get("GEMINI_LITE", "gemini-3.1-flash-lite")
 ROUTE_AT = int(os.environ.get("ROUTE_AT", "40000"))
 EMBED = os.environ.get("GEMINI_EMBED", "gemini-embedding-001")
+TOKENS = [t.strip() for t in os.environ.get("MCP_TOKENS", "").split(",") if t.strip()]
 
 app = FastAPI()
 
@@ -19,6 +20,8 @@ def db():
     cols = [r[1] for r in c.execute("pragma table_info(caps)")]
     if "emb" not in cols:
         c.execute("alter table caps add column emb text")
+    if "owner" not in cols:
+        c.execute("alter table caps add column owner text")
     return c
 
 
@@ -86,6 +89,15 @@ def embed(text):
             return json.loads(r.read())["embedding"]["values"]
     except Exception:
         return None
+
+
+def owner_of(req):
+    auth = req.headers.get("authorization", "")
+    tok = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    for t in TOKENS:
+        if tok and hmac.compare_digest(t, tok):
+            return hashlib.sha256(tok.encode()).hexdigest()[:12]
+    return None
 
 
 def cosine(a, b):
@@ -162,9 +174,8 @@ class In(BaseModel):
     transcript: str
 
 
-@app.post("/api/capsule")
-def make(i: In):
-    t = i.transcript.strip()
+def make_capsule(transcript, owner=None):
+    t = transcript.strip()
     if len(t) < 80:
         raise HTTPException(400, "Paste more of the conversation. At least a few exchanges.")
     model = route(t)
@@ -172,16 +183,23 @@ def make(i: In):
     cid = secrets.token_urlsafe(6)
     emb = embed(json.dumps(cap))
     c = db()
-    c.execute("insert into caps (id, data, emb) values (?, ?, ?)", (cid, json.dumps(cap), json.dumps(emb) if emb else None))
+    c.execute("insert into caps (id, data, emb, owner) values (?, ?, ?, ?)", (cid, json.dumps(cap), json.dumps(emb) if emb else None, owner))
     c.commit()
     c.close()
     return {"id": cid, "capsule": cap, "model": model}
 
 
-def load(cid):
+@app.post("/api/capsule")
+def make(i: In):
+    return make_capsule(i.transcript)
+
+
+def load(cid, owner=None):
     c = db()
-    r = c.execute("select data from caps where id=?", (cid,)).fetchone()
+    r = c.execute("select data, owner from caps where id=?", (cid,)).fetchone()
     c.close()
+    if r and r[1] and r[1] != owner:
+        r = None
     if not r:
         raise HTTPException(404, "No capsule with that id. It may have expired on a redeploy.")
     return json.loads(r[0])
@@ -228,13 +246,12 @@ def verify(cid: str, i: In):
             "passed": sum(1 for c in checks if c.get("preserved")), "total": len(checks)}
 
 
-@app.get("/api/search")
-def search(q: str):
+def search_caps(q, owner=None):
     qe = embed(q.strip())
     if not qe:
         raise HTTPException(502, "Embedding call failed")
     c = db()
-    rows = c.execute("select id, data, emb from caps where emb is not null").fetchall()
+    rows = c.execute("select id, data, emb from caps where emb is not null and owner is ?", (owner,)).fetchall()
     c.close()
     # ponytail: linear scan over sqlite rows, move to a vector index past a few thousand capsules
     hits = []
@@ -245,9 +262,14 @@ def search(q: str):
     return {"hits": hits[:5]}
 
 
+@app.get("/api/search")
+def search(q: str):
+    return search_caps(q)
+
+
 TOOLS = [
     {"name": "save_capsule",
-     "description": "Compress a chat transcript into a context capsule. Returns the capsule id, a share link and the capsule itself. The transcript is never stored.",
+     "description": "Compress a chat transcript into a private context capsule owned by this connector. Returns the capsule id and the capsule itself. The transcript is never stored.",
      "inputSchema": {"type": "object", "properties": {"transcript": {"type": "string", "description": "The full chat, both sides"}}, "required": ["transcript"]}},
     {"name": "load_capsule",
      "description": "Load a saved capsule as a resume prompt by id, or search saved capsules by meaning with a query. Give one of id or query.",
@@ -258,21 +280,25 @@ TOOLS = [
 ]
 
 
-def tool(name, a, base):
+def tool(name, a, owner):
     if name == "save_capsule":
-        r = make(In(transcript=a.get("transcript", "")))
-        return json.dumps({"id": r["id"], "share": base + "/c/" + r["id"], "model": r["model"], "capsule": r["capsule"]}, indent=1)
+        r = make_capsule(a.get("transcript", ""), owner)
+        return json.dumps({"id": r["id"], "model": r["model"], "private": True, "capsule": r["capsule"]}, indent=1)
     if name == "load_capsule":
         if a.get("id"):
-            return render(load(a["id"]), a.get("target", "claude"), 2000)
+            return render(load(a["id"], owner), a.get("target", "claude"), 2000)
         if a.get("query"):
-            return json.dumps(search(a["query"]), indent=1)
+            return json.dumps(search_caps(a["query"], owner), indent=1)
         raise HTTPException(400, "Give an id or a query")
     raise HTTPException(404, "Unknown tool: %s" % name)
 
 
 @app.post("/mcp")
 async def mcp(req: Request):
+    owner = owner_of(req)
+    if not owner:
+        return JSONResponse({"jsonrpc": "2.0", "error": {"code": -32001, "message": "Unauthorized. Send Authorization: Bearer <token>."}, "id": None},
+                            401, headers={"WWW-Authenticate": "Bearer"})
     try:
         m = await req.json()
     except ValueError:
@@ -290,7 +316,7 @@ async def mcp(req: Request):
         result = {"tools": TOOLS}
     elif method == "tools/call":
         try:
-            text = tool(params.get("name"), params.get("arguments") or {}, str(req.base_url).rstrip("/"))
+            text = tool(params.get("name"), params.get("arguments") or {}, owner)
             result = {"content": [{"type": "text", "text": text}], "isError": False}
         except HTTPException as e:
             result = {"content": [{"type": "text", "text": e.detail}], "isError": True}

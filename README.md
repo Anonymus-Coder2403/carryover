@@ -24,8 +24,10 @@ Your transcript is never written to the database. Only the capsule is.
 ## Use it from an assistant
 
 Carryover is also an MCP server. Add `https://carryover-kxq7.onrender.com/mcp` as a
-custom connector and the assistant gets two tools: `save_capsule` when a chat is getting
-long, and `load_capsule` by id or by a query about what the work was. No copy paste.
+custom connector with no sign in and one request header, `Authorization` set to
+`Bearer <your token>`. The assistant gets two tools: `save_capsule` when a chat is getting
+long, and `load_capsule` by id or by a query about what the work was. Capsules saved this
+way are private to your token. No copy paste.
 
 ## Run it locally
 
@@ -48,7 +50,8 @@ one capsule, because a green health check only proves the key is present.
 | `GEMINI_LITE` | `gemini-3.1-flash-lite` | transcripts at or below `ROUTE_AT` characters |
 | `ROUTE_AT` | `40000` | router threshold in characters |
 | `GEMINI_EMBED` | `gemini-embedding-001` | capsule embeddings for search |
-| `DB_PATH` | `/tmp/carryover.db` | SQLite file, ephemeral on Render |
+| `DB_PATH` | `/tmp/carryover.db` | SQLite file, on a persistent disk in production |
+| `MCP_TOKENS` | none | comma separated bearer tokens for the MCP endpoint |
 | `PORT` | `10000` | set by Render |
 
 ## Stack

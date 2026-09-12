@@ -106,7 +106,9 @@ check in `db()` so old rows are not a migration problem.
 | `GET /healthz` | `{ok, key}` where `key` reports whether GEMINI_API_KEY is set. Proves presence, not that the model accepts it. Only a real `POST /api/capsule` proves the core action |
 | `POST /api/verify/{id}` | body `{transcript}`, one model call, returns `{checks, verdict, passed, total}`. Transcript is not stored |
 | `GET /api/search` | query `q`, embeds it, cosine scan over stored capsules, top five |
-| `POST /mcp` | MCP streamable HTTP, protocol 2025-11-25, stateless JSON. Handles `initialize`, `ping`, `tools/list`, `tools/call`, 202 for notifications, JSON-RPC error for anything else. `GET /mcp` is 405 |
+| `POST /mcp` | MCP streamable HTTP, protocol 2025-11-25, stateless JSON. 401 with `WWW-Authenticate: Bearer` unless the bearer token matches an entry in `MCP_TOKENS`. Handles `initialize`, `ping`, `tools/list`, `tools/call`, 202 for notifications, JSON-RPC error for anything else. `GET /mcp` is 405 |
+| `owner_of(req)` | constant time match of the bearer token against `MCP_TOKENS`, returns a 12 character hash as the owner id, or None |
+| `make_capsule(t, owner)`, `search_caps(q, owner)` | the internals. The `/api/capsule` and `/api/search` routes call them with no owner, so the web can only make and see public capsules. `load(cid, owner)` returns 404 for a capsule whose owner does not match |
 | `tool(name, args, base)` | `save_capsule(transcript)` returns id, share link, model and capsule. `load_capsule(id or query, target)` returns the resume prompt or search hits |
 | `route(text)` | picks the lite or full model by transcript length |
 | `embed(text)`, `cosine(a, b)` | Gemini embedding via urllib, pure Python cosine |
@@ -224,6 +226,7 @@ rubric awards 20 points for a judge opening a Render URL and using the product d
 | `GEMINI_LITE` | no | `gemini-3.1-flash-lite`, used at or below `ROUTE_AT` |
 | `ROUTE_AT` | no | `40000` characters |
 | `GEMINI_EMBED` | no | `gemini-embedding-001` |
+| `MCP_TOKENS` | for MCP | none. Comma separated bearer tokens, one per user. With none set every MCP call is 401 |
 | `DB_PATH` | no | `/tmp/carryover.db` |
 | `PORT` | set by Render | 10000 |
 
