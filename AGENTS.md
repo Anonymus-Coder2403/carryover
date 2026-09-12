@@ -8,17 +8,27 @@ Hard deadline 13:45 IST. Demo 14:00 IST.
 
 ## Read these before touching code
 
-- `agent_docs/SPEC.md` high level and low level design, every endpoint and function
-- `agent_docs/BUILD_PLAN.md` the timeboxed order of work and what to cut when behind
-- `agent_docs/RESEARCH.md` competitive landscape and the research that shapes the product
-- `agent_docs/CONSTRAINTS.md` hackathon rubric, non negotiables, and the demo script
+All docs live at the repo root.
+
+- `SPEC.md` high level and low level design, every endpoint and function
+- `BUILD_PLAN.md` the timeboxed order of work and what to cut when behind
+- `RESEARCH.md` competitive landscape and the research that shapes the product
+- `CONSTRAINTS.md` hackathon rubric, non negotiables, and the demo script
 
 ## Current state
 
 Live at https://carryover-kxq7.onrender.com and deployed from https://github.com/Anonymus-Coder2403/carryover on every push to main.
 
-`main.py` and `index.html` exist and implement capsule extraction plus multi target
-rehydration. They are not yet deployed. Everything in SPEC.md marked P1 is unbuilt.
+Shipped and verified on the live URL: capsule extraction, multi target rehydration, the
+token meter and health verdict (P1), the fidelity check (P2), a length based model router,
+a client side file parser for ChatGPT and Claude exports, and cosine search over saved
+capsules using Gemini embeddings.
+
+Models are env vars. `GEMINI_MODEL` (default gemini-3.6-flash) handles transcripts over
+`ROUTE_AT` characters (default 40000) and the fidelity check. `GEMINI_LITE` (default
+gemini-3.1-flash-lite) handles everything shorter. `GEMINI_EMBED` (default
+gemini-embedding-001) embeds capsules. gemini-2.5-flash is retired for new keys and
+gemini-3.5-flash-lite returned malformed JSON in testing, do not use either.
 
 ## Hard rules for this repo
 
@@ -26,7 +36,11 @@ rehydration. They are not yet deployed. Everything in SPEC.md marked P1 is unbui
 - No login, no accounts, no OAuth. A judge must use it with zero setup.
 - No browser storage APIs. Server side SQLite only.
 - No new dependencies beyond `fastapi`, `uvicorn`, `pydantic`. Use stdlib `urllib` for
-  the model call so there is no SDK version risk during the build.
+  every Gemini call, generation and embeddings, so there is no SDK version risk.
+- uv only. `uv lock` after any pin change, `uv run --frozen` locally. Never pip, never
+  `uv pip`. Render builds with `uv sync --frozen` and starts with `uv run --frozen uvicorn`.
+- Postgres stays out. SQLite with a linear cosine scan is enough until there are
+  thousands of capsules, and Render's ephemeral disk is accepted.
 - Deploy after every completed step. A broken URL at 13:45 scores zero on 20 points.
 - Never invent a metric. Every number shown in the UI is computed at runtime from real
   input.

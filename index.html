@@ -64,6 +64,7 @@ h2{font-family:Newsreader,Georgia,serif;font-weight:600;font-size:22px;margin:0 
   <div class="grid">
     <div>
       <label for="t">Conversation to carry over</label>
+      <input type="file" id="file" accept=".txt,.md,.json" style="font-size:13px;margin:0 0 8px">
       <textarea id="t" placeholder="Paste the chat here, both sides of it."></textarea>
       <div class="meter" id="meter"><div class="bar"><i></i></div><span>Paste a chat to see its health. Token counts are estimated.</span></div>
       <div class="row">
@@ -88,6 +89,9 @@ h2{font-family:Newsreader,Georgia,serif;font-weight:600;font-size:22px;margin:0 
       <button id="chk" disabled>Check fidelity</button></div>
       <div id="verify"></div>
       <div class="share" id="share"></div>
+      <div class="row"><input id="q" placeholder="Search saved capsules" style="flex:1;padding:8px;border:1px solid var(--rule);background:var(--card);font:inherit">
+      <button id="find">Find</button></div>
+      <div id="hits"></div>
     </div>
   </div>
 </div>
@@ -129,6 +133,32 @@ function meter(){
 }
 let tm; $("#t").oninput = () => { clearTimeout(tm); tm = setTimeout(meter, 150); };
 
+function parseExport(text){
+  let j; try { j = JSON.parse(text); } catch (e) { return text; }
+  const convs = Array.isArray(j) ? j : [j];
+  const out = [];
+  for (const c of convs) {
+    if (c && c.mapping) {
+      const nodes = Object.values(c.mapping).filter(n => n.message && n.message.content && n.message.content.parts)
+        .sort((a, b) => (a.message.create_time || 0) - (b.message.create_time || 0));
+      for (const n of nodes) {
+        const txt = n.message.content.parts.filter(p => typeof p === "string").join("\n").trim();
+        if (txt) out.push((n.message.author.role === "user" ? "User: " : "Assistant: ") + txt);
+      }
+    } else if (c && c.role && c.content) {
+      out.push((c.role === "user" ? "User: " : "Assistant: ") + (typeof c.content === "string" ? c.content : JSON.stringify(c.content)));
+    } else if (c && Array.isArray(c.messages)) {
+      for (const m of c.messages) out.push((m.role === "user" ? "User: " : "Assistant: ") + (typeof m.content === "string" ? m.content : JSON.stringify(m.content)));
+    }
+  }
+  return out.length ? out.join("\n") : text;
+}
+$("#file").onchange = async () => {
+  const f = $("#file").files[0]; if (!f) return;
+  $("#t").value = parseExport(await f.text()); meter();
+  msg("Loaded " + f.name + ". Make the capsule.");
+};
+
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
   const g = b.dataset.t ? "[data-t]" : "[data-b]";
   document.querySelectorAll(g).forEach(x => x.setAttribute("aria-pressed", x === b));
@@ -145,7 +175,7 @@ $("#go").onclick = async () => {
       body: JSON.stringify({transcript})});
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || "Something went wrong.");
-    cid = d.id; cap = d.capsule; msg("Capsule made.");
+    cid = d.id; cap = d.capsule; msg("Capsule made with " + (d.model || "the default model") + ".");
     $("#share").innerHTML = 'Shareable link: <a href="/c/' + cid + '">' + location.origin + '/c/' + cid + '</a>';
     await pull();
   } catch (e) { msg(e.message, true); }
@@ -181,6 +211,15 @@ $("#chk").onclick = async () => {
         (c.preserved ? ' <span class="ok">Preserved</span>' : ' <span class="no">Not preserved</span>') + "</div>").join("");
   } catch (e) { $("#verify").innerHTML = '<p class="meta err">' + esc(e.message) + "</p>"; }
   $("#chk").disabled = false;
+};
+
+$("#find").onclick = async () => {
+  const q = $("#q").value.trim(); if (!q) return;
+  const r = await fetch("/api/search?q=" + encodeURIComponent(q));
+  const d = await r.json();
+  if (!r.ok) { $("#hits").innerHTML = '<p class="meta err">' + esc(d.detail) + "</p>"; return; }
+  $("#hits").innerHTML = d.hits.length ? d.hits.map(h => '<div class="check"><b><a href="/c/' + h.id + '">' + esc(h.title || h.id) + "</a> " + h.score + "</b>" + esc(h.goal) + "</div>").join("")
+    : '<p class="meta">No saved capsules yet.</p>';
 };
 
 $("#view").onclick = () => {

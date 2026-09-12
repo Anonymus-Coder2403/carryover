@@ -5,7 +5,10 @@ from pydantic import BaseModel
 
 DB = os.environ.get("DB_PATH", "/tmp/carryover.db")
 KEY = os.environ.get("GEMINI_API_KEY", "")
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+LITE = os.environ.get("GEMINI_LITE", "gemini-3.1-flash-lite")
+ROUTE_AT = int(os.environ.get("ROUTE_AT", "40000"))
+EMBED = os.environ.get("GEMINI_EMBED", "gemini-embedding-001")
 
 app = FastAPI()
 
@@ -13,6 +16,9 @@ app = FastAPI()
 def db():
     c = sqlite3.connect(DB)
     c.execute("create table if not exists caps (id text primary key, data text, created text default current_timestamp)")
+    cols = [r[1] for r in c.execute("pragma table_info(caps)")]
+    if "emb" not in cols:
+        c.execute("alter table caps add column emb text")
     return c
 
 
@@ -45,10 +51,14 @@ TRANSCRIPT:
 """
 
 
-def gemini(prompt):
+def route(text):
+    return MODEL if len(text) > ROUTE_AT else LITE
+
+
+def gemini(prompt, model=None):
     if not KEY:
         raise HTTPException(500, "GEMINI_API_KEY is not set on the server")
-    url = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s" % (MODEL, KEY)
+    url = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s" % (model or MODEL, KEY)
     body = json.dumps({
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json"},
@@ -65,6 +75,24 @@ def gemini(prompt):
         return json.loads(txt)
     except ValueError:
         raise HTTPException(502, "Model returned malformed JSON. Try again.")
+
+
+def embed(text):
+    url = "https://generativelanguage.googleapis.com/v1beta/models/%s:embedContent?key=%s" % (EMBED, KEY)
+    body = json.dumps({"content": {"parts": [{"text": text[:8000]}]}}).encode()
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read())["embedding"]["values"]
+    except Exception:
+        return None
+
+
+def cosine(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
 
 
 def blank(c):
@@ -139,13 +167,15 @@ def make(i: In):
     t = i.transcript.strip()
     if len(t) < 80:
         raise HTTPException(400, "Paste more of the conversation. At least a few exchanges.")
-    cap = blank(gemini(EXTRACT + t[:120000]))
+    model = route(t)
+    cap = blank(gemini(EXTRACT + t[:120000], model))
     cid = secrets.token_urlsafe(6)
+    emb = embed(json.dumps(cap))
     c = db()
-    c.execute("insert into caps (id, data) values (?, ?)", (cid, json.dumps(cap)))
+    c.execute("insert into caps (id, data, emb) values (?, ?, ?)", (cid, json.dumps(cap), json.dumps(emb) if emb else None))
     c.commit()
     c.close()
-    return {"id": cid, "capsule": cap}
+    return {"id": cid, "capsule": cap, "model": model}
 
 
 def load(cid):
@@ -196,6 +226,23 @@ def verify(cid: str, i: In):
     checks = [c for c in out.get("checks", []) if isinstance(c, dict)][:3]
     return {"checks": checks, "verdict": out.get("verdict", ""),
             "passed": sum(1 for c in checks if c.get("preserved")), "total": len(checks)}
+
+
+@app.get("/api/search")
+def search(q: str):
+    qe = embed(q.strip())
+    if not qe:
+        raise HTTPException(502, "Embedding call failed")
+    c = db()
+    rows = c.execute("select id, data, emb from caps where emb is not null").fetchall()
+    c.close()
+    # ponytail: linear scan over sqlite rows, move to a vector index past a few thousand capsules
+    hits = []
+    for cid, data, emb in rows:
+        cap = json.loads(data)
+        hits.append({"id": cid, "title": cap.get("title", ""), "goal": cap.get("goal", ""), "score": round(cosine(qe, json.loads(emb)), 3)})
+    hits.sort(key=lambda h: -h["score"])
+    return {"hits": hits[:5]}
 
 
 @app.get("/healthz")
