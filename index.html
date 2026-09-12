@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carryover</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#E9EBE5; --ink:#161E1A; --soft:#5C665F; --rule:#C4C8BE;
+  --deep:#2F5D50; --signal:#A8480B; --card:#F3F4EF;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font:400 16px/1.55 ui-sans-serif,system-ui,"Segoe UI",Helvetica,Arial,sans-serif}
+.wrap{max-width:1080px;margin:0 auto;padding:36px 22px 80px}
+h1{font-family:Newsreader,Georgia,serif;font-weight:600;font-size:clamp(34px,6vw,58px);
+  line-height:1.02;letter-spacing:-.02em;margin:0 0 14px}
+.sub{max-width:56ch;color:var(--soft);margin:0 0 34px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start}
+@media(max-width:820px){.grid{grid-template-columns:1fr}}
+label{display:block;font-weight:600;margin:0 0 8px}
+textarea{width:100%;height:340px;padding:14px;background:var(--card);color:var(--ink);
+  border:1px solid var(--rule);border-radius:2px;font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical}
+textarea:focus,button:focus-visible,a:focus-visible{outline:2px solid var(--deep);outline-offset:2px}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;align-items:center}
+button{font:inherit;cursor:pointer;border-radius:2px;padding:10px 16px;border:1px solid var(--ink);
+  background:transparent;color:var(--ink)}
+button.go{background:var(--deep);border-color:var(--deep);color:#F3F4EF;font-weight:600}
+button:disabled{opacity:.5;cursor:default}
+.tab{padding:7px 13px;border-color:var(--rule);background:var(--card)}
+.tab[aria-pressed=true]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.panel{border:1px solid var(--rule);background:var(--card);border-radius:2px;padding:18px;min-height:340px}
+.empty{color:var(--soft);max-width:40ch}
+pre{margin:0;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+h2{font-family:Newsreader,Georgia,serif;font-weight:600;font-size:22px;margin:0 0 4px}
+.meta{color:var(--soft);font-size:14px;margin:0 0 16px}
+.field{border-top:1px solid var(--rule);padding:12px 0}
+.field h3{margin:0 0 6px;font-size:13px;font-weight:600;color:var(--soft)}
+.field ul{margin:0;padding-left:18px}
+.err{color:var(--signal);font-weight:600}
+.share{font-size:14px;color:var(--soft);margin-top:14px;word-break:break-all}
+.share a{color:var(--deep)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Your chat hit its limit.<br>Take the thinking with you.</h1>
+  <p class="sub">Paste a conversation that is running out of room. Carryover pulls out the
+  decisions, the dead ends and the constraints, and hands you a prompt that starts a fresh
+  session exactly where the old one stopped.</p>
+
+  <div class="grid">
+    <div>
+      <label for="t">Conversation to carry over</label>
+      <textarea id="t" placeholder="Paste the chat here, both sides of it."></textarea>
+      <div class="row">
+        <button class="go" id="go">Make capsule</button>
+        <button id="ex">Use a sample chat</button>
+        <span id="msg" class="meta"></span>
+      </div>
+    </div>
+
+    <div>
+      <div class="row" style="margin:0 0 12px">
+        <button class="tab" data-t="claude" aria-pressed="true">Claude</button>
+        <button class="tab" data-t="chatgpt" aria-pressed="false">ChatGPT</button>
+        <button class="tab" data-t="cursor" aria-pressed="false">Cursor</button>
+        <button class="tab" data-b="500" aria-pressed="false">Short</button>
+        <button class="tab" data-b="2000" aria-pressed="true">Full</button>
+      </div>
+      <div class="panel" id="out"><p class="empty">The capsule and its resume prompt land here.
+      Copy the prompt into a new chat and keep working.</p></div>
+      <div class="row"><button id="copy" disabled>Copy resume prompt</button>
+      <button id="view" disabled>Show capsule</button></div>
+      <div class="share" id="share"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const SAMPLE = `User: We need to pick a queue for the notification service. Volume is about 40k events a day, bursty around 9am.
+Assistant: Options are SQS, Redis Streams, or Kafka.
+User: Kafka is out, we have no one to operate it and the team is three people.
+Assistant: Then SQS or Redis Streams.
+User: We already run Redis for sessions so Streams is tempting.
+Assistant: Streams would work but you lose the dead letter handling you get free with SQS.
+User: We tried Redis Streams last quarter on the billing job and consumer group rebalances kept dropping messages under load. Not doing that again.
+User: Go with SQS. But it has to stay inside the existing VPC, security will not approve a public endpoint.
+Assistant: Understood. FIFO or standard?
+User: Standard is fine, notifications are idempotent on our side.
+User: One more constraint, we cannot add new IAM roles this sprint, the platform team has a freeze until the 14th.
+Assistant: So we reuse the notification-worker role that already has queue permissions.
+User: Right. Next thing is the retry policy, we have not decided that yet. Also unclear whether the batch consumer should be in the same repo or its own service.
+User: Let us write the producer first. The consumer can wait.`;
+
+let cid = null, cap = null, target = "claude", budget = 2000, prompt = "";
+const $ = s => document.querySelector(s);
+const msg = (t, bad) => { const m = $("#msg"); m.textContent = t; m.className = bad ? "meta err" : "meta"; };
+
+$("#ex").onclick = () => { $("#t").value = SAMPLE; msg("Sample loaded. Make the capsule."); };
+
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
+  const g = b.dataset.t ? "[data-t]" : "[data-b]";
+  document.querySelectorAll(g).forEach(x => x.setAttribute("aria-pressed", x === b));
+  if (b.dataset.t) target = b.dataset.t; else budget = +b.dataset.b;
+  if (cid) pull();
+});
+
+$("#go").onclick = async () => {
+  const transcript = $("#t").value.trim();
+  if (transcript.length < 80) return msg("Paste a bit more of the chat first.", true);
+  $("#go").disabled = true; msg("Reading the conversation.");
+  try {
+    const r = await fetch("/api/capsule", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({transcript})});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Something went wrong.");
+    cid = d.id; cap = d.capsule; msg("Capsule made.");
+    $("#share").innerHTML = 'Shareable link: <a href="/c/' + cid + '">' + location.origin + '/c/' + cid + '</a>';
+    await pull();
+  } catch (e) { msg(e.message, true); }
+  $("#go").disabled = false;
+};
+
+async function pull() {
+  const r = await fetch("/api/resume/" + cid + "?target=" + target + "&budget=" + budget);
+  prompt = await r.text();
+  $("#out").innerHTML = "<h2>" + esc(cap.title || "Carried-over session") + "</h2>" +
+    '<p class="meta">Resume prompt for ' + target + "</p><pre>" + esc(prompt) + "</pre>";
+  $("#copy").disabled = false; $("#view").disabled = false;
+}
+
+$("#copy").onclick = async () => {
+  await navigator.clipboard.writeText(prompt);
+  $("#copy").textContent = "Copied"; setTimeout(() => $("#copy").textContent = "Copy resume prompt", 1500);
+};
+
+$("#view").onclick = () => {
+  const f = (t, items) => items && items.length ? '<div class="field"><h3>' + t + "</h3><ul>" +
+    items.map(i => "<li>" + esc(i) + "</li>").join("") + "</ul></div>" : "";
+  $("#out").innerHTML = "<h2>" + esc(cap.title || "Capsule") + "</h2>" +
+    f("Goal", [cap.goal]) + f("Where it stands", [cap.state]) + f("Next action", [cap.next_action]) +
+    f("Decisions", (cap.decisions||[]).map(d => d.choice + " (" + d.why + ")")) +
+    f("Ruled out", (cap.rejected||[]).map(d => d.approach + " (" + d.why_failed + ")")) +
+    f("Constraints", cap.constraints) + f("Unresolved", cap.open_threads) +
+    f("Artifacts", (cap.artifacts||[]).map(d => d.name + " at " + d.where));
+};
+
+function esc(s){ return String(s==null?"":s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+(async () => {
+  const pre = "__PRELOAD__";
+  if (pre.indexOf("PRELOAD") > -1) return;
+  const r = await fetch("/api/capsule/" + pre);
+  if (!r.ok) return;
+  const d = await r.json(); cid = d.id; cap = d.capsule; await pull();
+})();
+</script>
+</body>
+</html>
