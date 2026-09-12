@@ -51,7 +51,7 @@ def gemini(prompt):
     url = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s" % (MODEL, KEY)
     body = json.dumps({
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2},
+        "generationConfig": {"responseMimeType": "application/json"},
     }).encode()
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
     try:
@@ -61,7 +61,10 @@ def gemini(prompt):
         raise HTTPException(502, "Model call failed: %s" % e.read().decode()[:300])
     txt = out["candidates"][0]["content"]["parts"][0]["text"]
     txt = re.sub(r"^```(json)?|```$", "", txt.strip()).strip()
-    return json.loads(txt)
+    try:
+        return json.loads(txt)
+    except ValueError:
+        raise HTTPException(502, "Model returned malformed JSON. Try again.")
 
 
 def blank(c):
@@ -164,6 +167,35 @@ def resume(cid: str, target: str = "claude", budget: int = 2000):
     if target not in ("claude", "chatgpt", "cursor"):
         raise HTTPException(400, "target must be claude, chatgpt or cursor")
     return render(load(cid), target, budget)
+
+
+VERIFY = """You are testing whether a compressed context capsule preserved what mattered.
+
+Write three questions that the ORIGINAL transcript answers and that a person resuming
+this work would need to know. Prefer questions about decisions, ruled out approaches and
+constraints over questions about facts that are easy to look up.
+
+Then answer each question using ONLY the capsule. If the capsule does not contain the
+answer, say so plainly and mark it not preserved.
+
+Return only JSON:
+{"checks":[{"q":"","a":"","preserved":true}],"verdict":"one line"}
+
+TRANSCRIPT:
+%s
+
+CAPSULE:
+%s
+"""
+
+
+@app.post("/api/verify/{cid}")
+def verify(cid: str, i: In):
+    cap = load(cid)
+    out = gemini(VERIFY % (i.transcript.strip()[:120000], json.dumps(cap)))
+    checks = [c for c in out.get("checks", []) if isinstance(c, dict)][:3]
+    return {"checks": checks, "verdict": out.get("verdict", ""),
+            "passed": sum(1 for c in checks if c.get("preserved")), "total": len(checks)}
 
 
 @app.get("/healthz")

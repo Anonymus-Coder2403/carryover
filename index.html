@@ -46,6 +46,10 @@ h2{font-family:Newsreader,Georgia,serif;font-weight:600;font-size:22px;margin:0 
 .bar{flex:1 1 140px;height:6px;background:var(--rule);border-radius:3px;overflow:hidden}
 .bar i{display:block;height:100%;width:0;background:var(--deep);transition:width .2s}
 .bar.warn i{background:var(--signal)}
+.check{border-top:1px solid var(--rule);padding:10px 0;font-size:14px}
+.check b{display:block;margin-bottom:2px}
+.check .ok{color:var(--deep);font-weight:600}
+.check .no{color:var(--signal);font-weight:600}
 .share{font-size:14px;color:var(--soft);margin-top:14px;word-break:break-all}
 .share a{color:var(--deep)}
 </style>
@@ -80,7 +84,9 @@ h2{font-family:Newsreader,Georgia,serif;font-weight:600;font-size:22px;margin:0 
       <div class="panel" id="out"><p class="empty">The capsule and its resume prompt land here.
       Copy the prompt into a new chat and keep working.</p></div>
       <div class="row"><button id="copy" disabled>Copy resume prompt</button>
-      <button id="view" disabled>Show capsule</button></div>
+      <button id="view" disabled>Show capsule</button>
+      <button id="chk" disabled>Check fidelity</button></div>
+      <div id="verify"></div>
       <div class="share" id="share"></div>
     </div>
   </div>
@@ -153,12 +159,28 @@ async function pull() {
   const ratio = src && out ? " Carried " + src.toLocaleString() + " tokens of thinking in " + out.toLocaleString() + ", " + (src > out ? (src / out).toFixed(1) + "x smaller." : "no smaller, the chat was already short.") : "";
   $("#out").innerHTML = "<h2>" + esc(cap.title || "Carried-over session") + "</h2>" +
     '<p class="meta">Resume prompt for ' + target + "." + ratio + "</p><pre>" + esc(prompt) + "</pre>";
-  $("#copy").disabled = false; $("#view").disabled = false;
+  $("#copy").disabled = false; $("#view").disabled = false; $("#chk").disabled = false;
 }
 
 $("#copy").onclick = async () => {
   await navigator.clipboard.writeText(prompt);
   $("#copy").textContent = "Copied"; setTimeout(() => $("#copy").textContent = "Copy resume prompt", 1500);
+};
+
+$("#chk").onclick = async () => {
+  $("#chk").disabled = true;
+  $("#verify").innerHTML = '<p class="meta">Asking three questions the transcript answers, using only the capsule.</p>';
+  try {
+    const r = await fetch("/api/verify/" + cid, {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({transcript: $("#t").value})});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Fidelity check failed.");
+    $("#verify").innerHTML = "<h2>" + d.passed + " of " + d.total + " preserved</h2>" +
+      '<p class="meta">' + esc(d.verdict) + "</p>" +
+      d.checks.map(c => '<div class="check"><b>' + esc(c.q) + "</b>" + esc(c.a) +
+        (c.preserved ? ' <span class="ok">Preserved</span>' : ' <span class="no">Not preserved</span>') + "</div>").join("");
+  } catch (e) { $("#verify").innerHTML = '<p class="meta err">' + esc(e.message) + "</p>"; }
+  $("#chk").disabled = false;
 };
 
 $("#view").onclick = () => {
