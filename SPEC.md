@@ -102,10 +102,14 @@ a redeploy wipes saved capsules. Accepted for the hackathon. Do not redeploy aft
 | `POST /api/capsule` | validates length, calls gemini, stores, returns `{id, capsule}` |
 | `GET /api/capsule/{id}` | returns stored capsule |
 | `GET /api/resume/{id}` | plain text resume prompt, query params `target`, `budget` |
-| `GET /healthz` | `{ok, key}` where `key` reports whether GEMINI_API_KEY is set |
+| `GET /healthz` | `{ok, key}` where `key` reports whether GEMINI_API_KEY is set. Proves presence, not that the model accepts it. Only a real `POST /api/capsule` proves the core action |
+| `POST /api/verify/{id}` | body `{transcript}`, one model call, returns `{checks, verdict, passed, total}`. Transcript is not stored |
+| `GET /api/search` | query `q`, embeds it, cosine scan over stored capsules, top five |
+| `route(text)` | picks the lite or full model by transcript length |
+| `embed(text)`, `cosine(a, b)` | Gemini embedding via urllib, pure Python cosine |
 | `GET /` and `GET /c/{id}` | serve `index.html`, the second substitutes `__PRELOAD__` |
 
-### P1, build first: token meter and compression ratio
+### P1, built: token meter and compression ratio
 
 Client side only, in `index.html`. No server involvement, so it renders the instant the
 judge stops typing.
@@ -130,12 +134,13 @@ values. Label them in the UI as "estimated" so no fabricated precision is implie
 After a capsule is made, show compression as `srcToks` to `toks(prompt)`, rendered as
 "Carried N tokens of thinking in M" plus the ratio. Both numbers are real.
 
-### P1: server side source token count
+### P1, not built: server side source token count
 
-`POST /api/capsule` stores `src_toks = ceil(len(transcript)/4)` in the row.
-`GET /api/capsule/{id}` returns it so a shared link can show the same ratio.
+The ratio is computed client side from the pasted text and the rendered prompt. A shared
+`/c/{id}` link therefore shows the prompt but not the ratio. Add `src_toks` to the row if
+that matters.
 
-### P2, build second: fidelity check
+### P2, built: fidelity check
 
 New endpoint. One model call. Returns immediately renderable JSON.
 
@@ -172,9 +177,31 @@ with the question, the capsule's answer, and a pass or fail mark. Show the score
 Do not store transcripts. The privacy line in the demo is "your conversation is never
 written to our database, only the capsule is", and it must be literally true.
 
-### P3, only if time remains
+### P3, partly built
 
-Copy button feedback, keyboard focus states, mobile stacking. All already partly present.
+Copy button feedback and focus states shipped. Mobile stacking exists via the single
+column grid under 820px but was not checked on a phone. The budget selector for the
+window size was cut, the window is hardcoded to 200k.
+
+### Built beyond the plan, same day
+
+**Model router.** `route(text)` in `main.py` picks `GEMINI_LITE` for transcripts at or
+below `ROUTE_AT` characters and `GEMINI_MODEL` above it. The fidelity check always uses
+`GEMINI_MODEL` so the judge is never weaker than the compressor. The response to
+`POST /api/capsule` includes `model` so the UI reports which one ran. Measured on a 14k
+character transcript, three runs each: 3.6-flash 10.6 to 13.2s, 3.1-flash-lite 2.6 to 3.1s
+with equal or fuller capsules.
+
+**Export file parser.** Client side only, `parseExport` in `index.html`. Accepts a
+`.txt`, `.md` or `.json` file. Understands ChatGPT `conversations.json` (the `mapping`
+tree, ordered by `create_time`), a flat `messages` array, or a single role and content
+object. Anything else is treated as plain text. Not yet tested on a full sized export.
+
+**Capsule search.** `POST /api/capsule` embeds the capsule JSON with `GEMINI_EMBED` and
+stores the vector in an `emb` column added by a pragma check in `db()`. `GET
+/api/search?q=` embeds the query and does a linear cosine scan in pure Python over every
+row, returning the top five as `{id, title, goal, score}`. Embedding failure is
+non fatal, the capsule is stored with a null vector and skipped by search.
 
 ## Deliberately out of scope
 
@@ -189,7 +216,10 @@ rubric awards 20 points for a judge opening a Render URL and using the product d
 | Var | Required | Default |
 |---|---|---|
 | `GEMINI_API_KEY` | yes | none, `/healthz` reports false |
-| `GEMINI_MODEL` | no | `gemini-2.5-flash` |
+| `GEMINI_MODEL` | no | `gemini-3.6-flash`, used above `ROUTE_AT` and for the fidelity check |
+| `GEMINI_LITE` | no | `gemini-3.1-flash-lite`, used at or below `ROUTE_AT` |
+| `ROUTE_AT` | no | `40000` characters |
+| `GEMINI_EMBED` | no | `gemini-embedding-001` |
 | `DB_PATH` | no | `/tmp/carryover.db` |
 | `PORT` | set by Render | 10000 |
 

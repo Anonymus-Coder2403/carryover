@@ -17,7 +17,13 @@ All docs live at the repo root.
 
 ## Current state
 
-Live at https://carryover-kxq7.onrender.com and deployed from https://github.com/Anonymus-Coder2403/carryover on every push to main.
+Live at https://carryover-kxq7.onrender.com from https://github.com/Anonymus-Coder2403/carryover.
+
+Deployed by Manual Deploy only. Pushes do not auto deploy, the service was connected as a
+public repo rather than through the GitHub app. Verify what is actually live by byte comparing
+the served page against `git show <sha>:index.html`, never from memory of having pushed.
+Every deploy wipes `/tmp/carryover.db` and destroys every saved capsule, including any
+fallback link someone has open.
 
 Shipped and verified on the live URL: capsule extraction, multi target rehydration, the
 token meter and health verdict (P1), the fidelity check (P2), a length based model router,
@@ -40,7 +46,10 @@ gemini-3.5-flash-lite returned malformed JSON in testing, do not use either.
 - uv only. `uv lock` after any pin change, `uv run --frozen` locally. Never pip, never
   `uv pip`. Render builds with `uv sync --frozen` and starts with `uv run --frozen uvicorn`.
 - Postgres stays out. SQLite with a linear cosine scan is enough until there are
-  thousands of capsules, and Render's ephemeral disk is accepted.
+  thousands of capsules. The disk being ephemeral is the ceiling, and a Render persistent
+  disk mounted at the DB path is the upgrade, not a database change.
+- The dependency cap held through every feature. Cosine search is pure Python, no numpy.
+  Keep it that way until a measurement says otherwise.
 - Deploy after every completed step. A broken URL at 13:45 scores zero on 20 points.
 - Never invent a metric. Every number shown in the UI is computed at runtime from real
   input.
