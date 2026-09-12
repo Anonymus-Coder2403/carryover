@@ -15,6 +15,8 @@ Hard deadline 13:45 IST. Demo 14:00 IST.
 
 ## Current state
 
+Live at https://carryover-kxq7.onrender.com and deployed from https://github.com/Anonymus-Coder2403/carryover on every push to main.
+
 `main.py` and `index.html` exist and implement capsule extraction plus multi target
 rehydration. They are not yet deployed. Everything in SPEC.md marked P1 is unbuilt.
 

@@ -41,6 +41,11 @@ h2{font-family:Newsreader,Georgia,serif;font-weight:600;font-size:22px;margin:0 
 .field h3{margin:0 0 6px;font-size:13px;font-weight:600;color:var(--soft)}
 .field ul{margin:0;padding-left:18px}
 .err{color:var(--signal);font-weight:600}
+.meter{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-top:10px;font-size:14px;color:var(--soft)}
+.meter b{color:var(--ink)}
+.bar{flex:1 1 140px;height:6px;background:var(--rule);border-radius:3px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--deep);transition:width .2s}
+.bar.warn i{background:var(--signal)}
 .share{font-size:14px;color:var(--soft);margin-top:14px;word-break:break-all}
 .share a{color:var(--deep)}
 </style>
@@ -56,6 +61,7 @@ h2{font-family:Newsreader,Georgia,serif;font-weight:600;font-size:22px;margin:0 
     <div>
       <label for="t">Conversation to carry over</label>
       <textarea id="t" placeholder="Paste the chat here, both sides of it."></textarea>
+      <div class="meter" id="meter"><div class="bar"><i></i></div><span>Paste a chat to see its health. Token counts are estimated.</span></div>
       <div class="row">
         <button class="go" id="go">Make capsule</button>
         <button id="ex">Use a sample chat</button>
@@ -100,7 +106,22 @@ let cid = null, cap = null, target = "claude", budget = 2000, prompt = "";
 const $ = s => document.querySelector(s);
 const msg = (t, bad) => { const m = $("#msg"); m.textContent = t; m.className = bad ? "meta err" : "meta"; };
 
-$("#ex").onclick = () => { $("#t").value = SAMPLE; msg("Sample loaded. Make the capsule."); };
+$("#ex").onclick = () => { $("#t").value = SAMPLE; msg("Sample loaded. Make the capsule."); meter(); };
+
+const WIN = 200000;
+function toks(s){ return Math.ceil(s.length / 4); }
+function health(t){
+  const pct = t / WIN;
+  if (pct < 0.40) return {label: "Healthy", note: "Plenty of room. Keep going."};
+  if (pct < 0.60) return {label: "Degrading", note: "Quality drops in this band. Good time to move."};
+  return {label: "Hand off now", note: "Past the point where models reliably hold the thread."};
+}
+function meter(){
+  const t = toks($("#t").value), h = health(t), pct = Math.min(100, t / WIN * 100);
+  const bar = $("#meter .bar"); bar.className = "bar" + (pct >= 40 ? " warn" : ""); bar.firstChild.style.width = pct + "%";
+  $("#meter span").innerHTML = "<b>" + h.label + "</b> " + h.note + " About " + t.toLocaleString() + " of " + WIN.toLocaleString() + " tokens, estimated.";
+}
+let tm; $("#t").oninput = () => { clearTimeout(tm); tm = setTimeout(meter, 150); };
 
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
   const g = b.dataset.t ? "[data-t]" : "[data-b]";
@@ -128,8 +149,10 @@ $("#go").onclick = async () => {
 async function pull() {
   const r = await fetch("/api/resume/" + cid + "?target=" + target + "&budget=" + budget);
   prompt = await r.text();
+  const src = toks($("#t").value), out = toks(prompt);
+  const ratio = src && out ? " Carried " + src.toLocaleString() + " tokens of thinking in " + out.toLocaleString() + ", " + (src > out ? (src / out).toFixed(1) + "x smaller." : "no smaller, the chat was already short.") : "";
   $("#out").innerHTML = "<h2>" + esc(cap.title || "Carried-over session") + "</h2>" +
-    '<p class="meta">Resume prompt for ' + target + "</p><pre>" + esc(prompt) + "</pre>";
+    '<p class="meta">Resume prompt for ' + target + "." + ratio + "</p><pre>" + esc(prompt) + "</pre>";
   $("#copy").disabled = false; $("#view").disabled = false;
 }
 
