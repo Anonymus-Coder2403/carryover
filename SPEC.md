@@ -191,11 +191,19 @@ window size was cut, the window is hardcoded to 200k.
 ### Built beyond the plan, same day
 
 **Model router.** `route(text)` in `main.py` picks `GEMINI_LITE` for transcripts at or
-below `ROUTE_AT` characters and `GEMINI_MODEL` above it. The fidelity check always uses
+below `ROUTE_AT` characters and `GEMINI_MODEL` above it. Default is off, `ROUTE_AT=0`. The fidelity check always uses
 `GEMINI_MODEL` so the judge is never weaker than the compressor. The response to
 `POST /api/capsule` includes `model` so the UI reports which one ran. Measured on a 14k
 character transcript, three runs each: 3.6-flash 10.6 to 13.2s, 3.1-flash-lite 2.6 to 3.1s
-with equal or fuller capsules.
+with equal or fuller capsules. That held until the `literals` field was added: the lite model
+then dropped every long URL in five of five runs and returned malformed JSON in two of six
+calls, while the full model kept all 23 literals in three of three at about 11s. Exact values
+are the point of the product, so the router defaults to off.
+
+**Literals.** The capsule has a `literals` list for every exact URL, id, file path, command,
+env var name, model name and config string, verbatim. It exists because a resumed session
+asked for "the provided URLs" that the capsule had paraphrased away. It renders as its own
+block in every dialect and is cut only at the short budget.
 
 **Export file parser.** Client side only, `parseExport` in `index.html`. Accepts a
 `.txt`, `.md` or `.json` file. Understands ChatGPT `conversations.json` (the `mapping`
@@ -224,7 +232,7 @@ rubric awards 20 points for a judge opening a Render URL and using the product d
 | `GEMINI_API_KEY` | yes | none, `/healthz` reports false |
 | `GEMINI_MODEL` | no | `gemini-3.6-flash`, used above `ROUTE_AT` and for the fidelity check |
 | `GEMINI_LITE` | no | `gemini-3.1-flash-lite`, used at or below `ROUTE_AT` |
-| `ROUTE_AT` | no | `40000` characters |
+| `ROUTE_AT` | no | `0`, which sends everything to `GEMINI_MODEL`. Set to a character count to route shorter transcripts to `GEMINI_LITE` |
 | `GEMINI_EMBED` | no | `gemini-embedding-001` |
 | `MCP_TOKENS` | for MCP | none. Comma separated bearer tokens, one per user. With none set every MCP call is 401 |
 | `DB_PATH` | no | `/tmp/carryover.db` |

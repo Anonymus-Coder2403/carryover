@@ -7,7 +7,7 @@ DB = os.environ.get("DB_PATH", "/tmp/carryover.db")
 KEY = os.environ.get("GEMINI_API_KEY", "")
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 LITE = os.environ.get("GEMINI_LITE", "gemini-3.1-flash-lite")
-ROUTE_AT = int(os.environ.get("ROUTE_AT", "40000"))
+ROUTE_AT = int(os.environ.get("ROUTE_AT", "0"))
 EMBED = os.environ.get("GEMINI_EMBED", "gemini-embedding-001")
 TOKENS = [t.strip() for t in os.environ.get("MCP_TOKENS", "").split(",") if t.strip()]
 
@@ -35,6 +35,7 @@ SCHEMA = """{
  "artifacts": [{"name": "", "kind": "", "where": ""}],
  "open_threads": ["unresolved questions"],
  "next_action": "the single next step",
+ "literals": ["every exact URL, id, file path, command, env var name, model name or config string from the transcript, verbatim, one per entry"],
  "glossary": [{"term": "", "means": ""}]
 }"""
 
@@ -46,6 +47,10 @@ out, constraints the user imposed, and exactly where the work stands.
 
 Drop pleasantries, restated code the user already has, and anything the next assistant can
 re-derive in one step.
+
+Never drop literal values. URLs, ids, file paths, commands, env var names, model names and
+config strings go into the capsule verbatim, in artifacts or constraints, because they are
+the most expensive things to rediscover. Never paraphrase a URL as "the provided URLs".
 
 Return only JSON matching this shape, no prose, no code fences:
 """ + SCHEMA + """
@@ -109,7 +114,7 @@ def cosine(a, b):
 
 def blank(c):
     d = {"title": "", "goal": "", "state": "", "decisions": [], "rejected": [], "constraints": [],
-         "artifacts": [], "open_threads": [], "next_action": "", "glossary": []}
+         "artifacts": [], "open_threads": [], "next_action": "", "literals": [], "glossary": []}
     d.update({k: v for k, v in c.items() if k in d and v})
     return d
 
@@ -117,11 +122,11 @@ def blank(c):
 def render(c, target, budget):
     c = blank(c)
     order = ["goal", "state", "next_action", "decisions", "constraints", "rejected",
-             "open_threads", "artifacts", "glossary"]
+             "literals", "open_threads", "artifacts", "glossary"]
     if budget <= 600:
         order = order[:4]
     elif budget <= 2200:
-        order = order[:7]
+        order = order[:8]
 
     def lines(k):
         v = c.get(k)
@@ -141,7 +146,8 @@ def render(c, target, budget):
 
     names = {"goal": "Goal", "state": "Where the work stands", "next_action": "Next action",
              "decisions": "Decisions already made", "constraints": "Constraints that still apply",
-             "rejected": "Approaches already ruled out", "open_threads": "Still unresolved",
+             "rejected": "Approaches already ruled out", "literals": "Exact values, use verbatim",
+             "open_threads": "Still unresolved",
              "artifacts": "Artifacts", "glossary": "Terms"}
 
     head = {

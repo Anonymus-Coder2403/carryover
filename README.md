@@ -48,7 +48,7 @@ one capsule, because a green health check only proves the key is present.
 | `GEMINI_API_KEY` | none | required |
 | `GEMINI_MODEL` | `gemini-3.6-flash` | long transcripts and the fidelity check |
 | `GEMINI_LITE` | `gemini-3.1-flash-lite` | transcripts at or below `ROUTE_AT` characters |
-| `ROUTE_AT` | `40000` | router threshold in characters |
+| `ROUTE_AT` | `0` | send transcripts at or below this many characters to the lite model, off by default |
 | `GEMINI_EMBED` | `gemini-embedding-001` | capsule embeddings for search |
 | `DB_PATH` | `/tmp/carryover.db` | SQLite file, on a persistent disk in production |
 | `MCP_TOKENS` | none | comma separated bearer tokens for the MCP endpoint |

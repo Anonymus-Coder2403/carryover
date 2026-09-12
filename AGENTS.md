@@ -39,9 +39,11 @@ token meter and health verdict (P1), the fidelity check (P2), a length based mod
 a client side file parser for ChatGPT and Claude exports, and cosine search over saved
 capsules using Gemini embeddings.
 
-Models are env vars. `GEMINI_MODEL` (default gemini-3.6-flash) handles transcripts over
-`ROUTE_AT` characters (default 40000) and the fidelity check. `GEMINI_LITE` (default
-gemini-3.1-flash-lite) handles everything shorter. `GEMINI_EMBED` (default
+Models are env vars. `GEMINI_MODEL` (default gemini-3.6-flash) handles extraction and the
+fidelity check. `GEMINI_LITE` (default gemini-3.1-flash-lite) is used only for transcripts
+at or below `ROUTE_AT` characters, and `ROUTE_AT` defaults to 0 because the lite model
+drops long URLs from the `literals` field and fails JSON mode about a third of the time on
+them. Turn it on only with a measurement that says literals survive. `GEMINI_EMBED` (default
 gemini-embedding-001) embeds capsules. gemini-2.5-flash is retired for new keys and
 gemini-3.5-flash-lite returned malformed JSON in testing, do not use either.
 

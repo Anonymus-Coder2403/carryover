@@ -229,7 +229,7 @@ $("#view").onclick = () => {
     f("Goal", [cap.goal]) + f("Where it stands", [cap.state]) + f("Next action", [cap.next_action]) +
     f("Decisions", (cap.decisions||[]).map(d => d.choice + " (" + d.why + ")")) +
     f("Ruled out", (cap.rejected||[]).map(d => d.approach + " (" + d.why_failed + ")")) +
-    f("Constraints", cap.constraints) + f("Unresolved", cap.open_threads) +
+    f("Constraints", cap.constraints) + f("Exact values", cap.literals) + f("Unresolved", cap.open_threads) +
     f("Artifacts", (cap.artifacts||[]).map(d => d.name + " at " + d.where));
 };
 
