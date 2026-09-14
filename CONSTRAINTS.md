@@ -17,14 +17,23 @@
 - The database lives on a Render persistent disk at /var/data. Before 14:49 on 12 Sep 2026
   it was on /tmp and every deploy destroyed every capsule. That ceiling is closed, with no
   code change, by DB_PATH pointing at the disk.
+- Incident, 13 Sep 2026. Six capsules made on the website held a third party's email and
+  phone and were discoverable through the public search endpoint and readable through the
+  public resume endpoint without any token. All ownerless rows were deleted from the Render
+  shell after a backup, and the deletion was verified from outside. The root cause is a
+  design gap, not a bug: website capsules have no owner, and search runs over every
+  ownerless row. The MCP path is unaffected because every capsule it saves has an owner.
+  Until the web path is changed, anything pasted on the site is discoverable by meaning by
+  anyone with the URL. Do not put personal data through the website.
 - The MCP endpoint requires a bearer token from `MCP_TOKENS`, compared in constant time.
   Capsules saved through MCP are owned by the hash of the token that saved them, are
   invisible to the website and to every other token, and get no share link. Capsules
   made on the website stay public by link. Tokens live in Render's env panel and in the
   Claude connector's request header, never in a file, a commit or a chat. Clients that
-  cannot send headers use `/mcp/<token>` instead. The middleware masks that path before
-  it is logged, so the token is never written to Render's logs either. Treat that URL
-  as a secret, it is the token.
+  cannot send headers use `/mcp/<token>` instead. The middleware masks that path in
+  uvicorn's access log, verified locally with a grep. Whether Render's proxy logs the raw
+  path upstream of the app is unverified. Treat that URL as a secret regardless, it is the
+  token.
 - Transcripts are never written to the database. Only capsules and their embeddings are.
   The fidelity check receives the transcript from the client and does not store it.
   This is a claim made on stage, so it must stay true in code.
