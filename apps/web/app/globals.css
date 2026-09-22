@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+:root {
+  --ink: #1b2420;
+  --paper: #eef0e7;
+  --surface: #f8f9f3;
+  --line: #c9cdbe;
+  --brass: #b8763a;
+  --brass-deep: #8f5a22;
+  --rust: #a6412b;
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-line: var(--line);
+  --color-brass: var(--brass);
+  --color-brass-deep: var(--brass-deep);
+  --color-rust: var(--rust);
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+  --font-data: var(--font-data);
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body), Georgia, serif;
+}
+
+h1, h2, h3, h4, .font-display {
+  font-family: var(--font-display), sans-serif;
+}
+
+code, pre, .font-data {
+  font-family: var(--font-data), monospace;
+}
+
+::selection {
+  background: var(--brass);
+  color: var(--surface);
+}
+
+:focus-visible {
+  outline: 2px solid var(--brass);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
