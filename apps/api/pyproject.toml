@@ -6,4 +6,7 @@ dependencies = [
     "fastapi==0.115.6",
     "uvicorn==0.34.0",
     "pydantic==2.10.4",
+    "sqlalchemy>=2.0.54",
+    "psycopg[binary]>=3.3.6",
+    "pyjwt[crypto]>=2.14.0",
 ]

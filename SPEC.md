@@ -5,7 +5,14 @@
 Your AI gets measurably worse before it runs out of room. Carryover tells you when to
 move, and moves the thinking for you.
 
-## End to end flow
+## Layout
+
+Monorepo. `apps/api` is the FastAPI backend this spec mostly describes. `apps/web` is a
+Next.js app that explains the product and is where a user signs up, logs in, and gets the
+Supabase access token needed to call the MCP server. See `AGENTS.md` for the file by file
+breakdown of both.
+
+## End to end flow, apps/api
 
 ```
 user pastes dying chat
@@ -14,10 +21,10 @@ user pastes dying chat
 [client] token estimate, health verdict          <- instant, no network
         |
         v
-POST /api/capsule  ---> Gemini 2.5 Flash, JSON mode
+POST /api/capsule  ---> Gemini, JSON mode
         |                 extract ContextCapsule
         v
-   SQLite row (id, capsule json, source token count)
+   Postgres row (id, capsule json, owner, parent, embedding)
         |
         +--> GET /api/resume/{id}?target=&budget=   pure python, no model call
         |         renders Claude / ChatGPT / Cursor dialect
@@ -29,17 +36,19 @@ POST /api/capsule  ---> Gemini 2.5 Flash, JSON mode
 user copies resume prompt into a fresh session in any assistant
 ```
 
-Single process. No queue, no worker, no cache, no vector store. Every stage is either
-one model call or pure arithmetic.
+Single process for the API. No queue, no worker, no cache, no vector store. Every stage is
+either one model call or pure arithmetic. The MCP path (`POST /mcp`) runs the same
+`make_capsule`/`load`/`search_caps` functions, the only difference from the web path is
+that it has a verified owner.
 
 ## High level design
 
-Three layers, all in `main.py`.
+Split across `apps/api/app/*.py` by responsibility, see `AGENTS.md` for the module list.
 
-**Ingestion.** Accepts raw pasted transcript text. No parsers for `conversations.json`,
-no file upload, no browser extension. Paste is the only path in v1 because it works
-identically for ChatGPT, Claude, Gemini and any other assistant, and because a judge can
-do it in five seconds.
+**Ingestion.** Accepts raw pasted transcript text. No parsers for `conversations.json`
+server side, no browser extension. The client side file parser (see below) turns exports
+into the same pasted text shape before it ever reaches the server, so the API only ever
+sees plain text.
 
 **Compression.** One Gemini call with `responseMimeType: application/json` produces a
 `ContextCapsule`. The capsule is the product. It is deliberately lossy about prose and
@@ -52,6 +61,11 @@ call, so target switching and budget switching are instant in the UI.
 **Verification.** A second model call that treats the capsule as the only source and
 answers questions drawn from the original transcript. This is the differentiator. It
 turns "trust us, the handoff worked" into a number on screen.
+
+**Auth.** Supabase Auth issues JWTs to users of the Next.js app. `apps/api` verifies them
+itself against `SUPABASE_URL`'s published JWKS (ES256), it never calls Supabase's auth API
+to check a token. This gates the MCP path only, the web path stays open, see
+`CONSTRAINTS.md`.
 
 ## Data model
 
@@ -68,6 +82,7 @@ turns "trust us, the handoff worked" into a number on screen.
   "artifacts":    [{"name": "", "kind": "", "where": ""}],
   "open_threads": ["unresolved questions"],
   "next_action":  "the single next step",
+  "literals":     ["every exact URL, id, file path, command, env var name, model name or config string, verbatim"],
   "glossary":     [{"term": "", "means": ""}]
 }
 ```
@@ -75,51 +90,57 @@ turns "trust us, the handoff worked" into a number on screen.
 Field order is also priority order for budget truncation. `goal`, `state` and
 `next_action` never get cut.
 
-### SQLite
+### Postgres
 
-```sql
-create table if not exists caps (
-  id       text primary key,
-  data     text not null,      -- capsule json
-  src_toks integer default 0,  -- estimated tokens of the source transcript
-  created  text default current_timestamp
-);
+SQLAlchemy model `Capsule` in `apps/api/app/models.py`:
+
+```python
+class Capsule(Base):
+    __tablename__ = "capsules"
+    id      = Column(String, primary_key=True)
+    data    = Column(JSON, nullable=False)   # capsule json
+    emb     = Column(JSON, nullable=True)    # embedding vector, json array of floats
+    owner   = Column(String, nullable=True, index=True)  # Supabase user id, or NULL for web capsules
+    parent  = Column(String, nullable=True)
+    created = Column(DateTime(timezone=True), server_default=func.now())
 ```
 
-Path `/tmp/carryover.db` by default, overridden on Render with `DB_PATH=/var/data/carryover.db`
-on a 1 GB persistent disk. Capsules survive deploys. The `emb` column is added by a pragma
-check in `db()` so old rows are not a migration problem.
+`DATABASE_URL` is Supabase's Postgres connection string. `Base.metadata.create_all()` runs
+on startup, there is no migration tool yet, this is a single table with no evolving shape
+so it has not been needed. No `src_toks` column, the token ratio shown in the UI is
+computed client side and not persisted, see P1 below.
 
 ## Low level design
 
 ### Existing, do not rewrite
 
-| Function | Behaviour |
-|---|---|
-| `db()` | opens sqlite, creates table, returns connection |
-| `gemini(prompt)` | POSTs to `generativelanguage.googleapis.com`, JSON mode, temp 0.2, strips code fences, returns dict. Raises 502 with the upstream body on failure |
-| `blank(c)` | fills missing capsule keys so renderers never KeyError |
-| `render(c, target, budget)` | assembles the resume prompt. Claude gets XML tags, ChatGPT gets markdown headers, Cursor gets rules file comments |
-| `POST /api/capsule` | validates length, calls gemini, stores, returns `{id, capsule}` |
-| `GET /api/capsule/{id}` | returns stored capsule |
-| `GET /api/resume/{id}` | plain text resume prompt, query params `target`, `budget` |
-| `GET /healthz` | `{ok, key}` where `key` reports whether GEMINI_API_KEY is set. Proves presence, not that the model accepts it. Only a real `POST /api/capsule` proves the core action |
-| `POST /api/verify/{id}` | body `{transcript}`, one model call, returns `{checks, verdict, passed, total}`. Transcript is not stored |
-| `GET /api/search` | query `q`, embeds it, cosine scan over stored capsules, top five |
-| `POST /mcp` | MCP streamable HTTP, protocol 2025-11-25, stateless JSON. 401 with `WWW-Authenticate: Bearer` unless the bearer token matches an entry in `MCP_TOKENS`. Handles `initialize`, `ping`, `tools/list`, `tools/call`, 202 for notifications, JSON-RPC error for anything else. `GET /mcp` is 405 |
-| `owner_of(req)` | constant time match of the bearer token, or the token from a `/mcp/<token>` path, against `MCP_TOKENS`, returns a 12 character hash as the owner id, or None |
-| `PathToken` middleware | rewrites `/mcp/<token>` to `/mcp` before routing and before uvicorn logs the path, stashing the token in the ASGI scope. Exists for clients that cannot send headers, ChatGPT custom connectors offer only OAuth or nothing. Verified that the token never appears in the access log |
-| `make_capsule(t, owner)`, `search_caps(q, owner)` | the internals. The `/api/capsule` and `/api/search` routes call them with no owner, so the web can only make and see public capsules. `load(cid, owner)` returns 404 for a capsule whose owner does not match |
-| `tool(name, args, base)` | `save_capsule(transcript)` returns id, share link, model and capsule. `load_capsule(id or query, target)` returns the resume prompt or search hits |
-| `route(text)` | picks the lite or full model by transcript length |
-| `make_capsule(t, owner, parent)` | extraction, with the parent capsule appended as prior context when given |
-| `embed(text)`, `cosine(a, b)` | Gemini embedding via urllib, pure Python cosine |
-| `GET /` and `GET /c/{id}` | serve `index.html`, the second substitutes `__PRELOAD__` |
+| Function | Module | Behaviour |
+|---|---|---|
+| `init_db()` | `db.py` | creates the Postgres engine and the `capsules` table if missing |
+| `gemini(prompt)` | `gemini.py` | POSTs to `generativelanguage.googleapis.com`, JSON mode, strips code fences, returns dict. Raises 502 with the upstream body on failure |
+| `blank(c)` | `capsules.py` | fills missing capsule keys so renderers never KeyError |
+| `render(c, target, budget)` | `capsules.py` | assembles the resume prompt. Claude gets XML tags, ChatGPT gets markdown headers, Cursor gets rules file comments |
+| `POST /api/capsule` | `routes.py` | validates length, calls `make_capsule` with no owner, returns `{id, capsule}` |
+| `GET /api/capsule/{id}` | `routes.py` | returns stored capsule and its parent id |
+| `GET /api/resume/{id}` | `routes.py` | plain text resume prompt, query params `target`, `budget` |
+| `GET /healthz` | `routes.py` | `{ok, key}` where `key` reports whether GEMINI_API_KEY is set. Proves presence, not that the model accepts it. Only a real `POST /api/capsule` proves the core action |
+| `POST /api/verify/{id}` | `routes.py` | body `{transcript}`, one model call, returns `{checks, verdict, passed, total}`. Transcript is not stored |
+| `GET /api/search` | `routes.py` | query `q`, embeds it, cosine scan over stored capsules with `owner IS NULL`, top five |
+| `GET /.well-known/oauth-protected-resource` | `routes.py` | RFC 9728 protected resource metadata, `{resource, authorization_servers}`, names Supabase's project as the authorization server for `/mcp` |
+| `POST /mcp` | `mcp.py` | MCP streamable HTTP, protocol 2025-11-25, stateless JSON. 401 with `WWW-Authenticate: Bearer resource_metadata="..."` (pointing at the well known URL above) unless the bearer resolves to a Supabase user id. Handles `initialize`, `ping`, `tools/list`, `tools/call`, 202 for notifications, JSON-RPC error for anything else. `GET /mcp` is 405 |
+| `owner_of(req)` | `auth.py` | reads the bearer token or the `/mcp/<token>` path token, verifies it as a Supabase JWT against `SUPABASE_URL`'s JWKS, returns the `sub` claim as the owner id, or `None` |
+| `verify_jwt(token)` | `auth.py` | fetches the signing key for the token's `kid` via `PyJWKClient` (cached), `jwt.decode` with `algorithms=["ES256", "RS256"]`, signature and expiry checked, audience not checked since OAuth issued tokens carry a different `aud` than password flow ones |
+| `PathToken` middleware | `auth.py` | rewrites `/mcp/<token>` to `/mcp` before routing and before uvicorn logs the path, stashing the token in the ASGI scope. Exists for clients that cannot send headers |
+| `make_capsule(t, owner, parent)`, `search_caps(q, owner)` | `capsules.py` | the internals. The `/api/capsule` and `/api/search` routes call them with `owner=None`, so the web can only make and see public capsules. `load(cid, owner)` raises 404 for a capsule whose owner does not match |
+| `tool(name, args, owner)` | `mcp.py` | `save_capsule(transcript)` returns id, model and capsule. `load_capsule(id or query, target)` returns the resume prompt or search hits |
+| `route(text)` | `gemini.py` | picks the lite or full model by transcript length |
+| `embed(text)`, `cosine(a, b)` | `capsules.py` (`cosine`) and `gemini.py` (`embed`) | Gemini embedding via urllib, pure Python cosine |
+| `GET /` and `GET /c/{id}` | `routes.py` | serve `index.html`, the second substitutes `__PRELOAD__` |
 
 ### P1, built: token meter and compression ratio
 
-Client side only, in `index.html`. No server involvement, so it renders the instant the
-judge stops typing.
+Client side only, in `apps/api/app/index.html`. No server involvement, so it renders the
+instant the user stops typing.
 
 ```js
 function toks(s){ return Math.ceil(s.length / 4); }
@@ -132,31 +153,30 @@ function health(t, win){
 }
 ```
 
-Wire `oninput` on the textarea, debounced 150ms, to update a meter above the button.
+Wired `oninput` on the textarea, debounced 150ms, to update a meter above the button.
 `win` defaults to 200000 with a small select for 128k / 200k / 1M.
 
-The 40% and 60% thresholds come from RESEARCH.md and are honest estimates, not measured
-values. Label them in the UI as "estimated" so no fabricated precision is implied.
+The 40% and 60% thresholds come from `RESEARCH.md` and are honest estimates, not measured
+values. Labelled in the UI as "estimated" so no fabricated precision is implied.
 
-After a capsule is made, show compression as `srcToks` to `toks(prompt)`, rendered as
+After a capsule is made, compression shows as `srcToks` to `toks(prompt)`, rendered as
 "Carried N tokens of thinking in M" plus the ratio. Both numbers are real.
 
 ### P1, not built: server side source token count
 
 The ratio is computed client side from the pasted text and the rendered prompt. A shared
-`/c/{id}` link therefore shows the prompt but not the ratio. Add `src_toks` to the row if
-that matters.
+`/c/{id}` link therefore shows the prompt but not the ratio. Would need a `src_toks` column
+on `Capsule` if that starts to matter.
 
 ### P2, built: fidelity check
 
-New endpoint. One model call. Returns immediately renderable JSON.
+`POST /api/verify/{cid}`. One model call. Returns immediately renderable JSON.
 
 ```
-POST /api/verify/{cid}
 body: {"transcript": "..."}    the client still holds it, do not store it server side
 ```
 
-Prompt shape:
+Prompt shape (`VERIFY` in `gemini.py`):
 
 ```
 You are testing whether a compressed context capsule preserved what mattered.
@@ -177,30 +197,31 @@ CAPSULE:
 ...
 ```
 
-Response handling: score is `sum(preserved) / len(checks)`. Render each check as a row
-with the question, the capsule's answer, and a pass or fail mark. Show the score as
-"3 of 3 preserved".
+Response handling: score is `sum(preserved) / len(checks)`. Rendered as a row per check
+with the question, the capsule's answer, and a pass or fail mark, plus "N of N preserved".
 
-Do not store transcripts. The privacy line in the demo is "your conversation is never
-written to our database, only the capsule is", and it must be literally true.
+Transcripts are not stored. The privacy line is "your conversation is never written to our
+database, only the capsule is", and it must be literally true, it is checked by reading
+`capsules.py` and `routes.py` for any write of the raw transcript.
 
 ### P3, partly built
 
-Copy button feedback and focus states shipped. Mobile stacking exists via the single
-column grid under 820px but was not checked on a phone. The budget selector for the
-window size was cut, the window is hardcoded to 200k.
+Copy button feedback and focus states shipped in `index.html`. Mobile stacking exists via
+the single column grid under 820px but was not checked on a phone. The budget selector for
+the window size was cut, the window is hardcoded to 200k.
 
-### Built beyond the plan, same day
+### Built beyond the original hackathon plan
 
-**Model router.** `route(text)` in `main.py` picks `GEMINI_LITE` for transcripts at or
-below `ROUTE_AT` characters and `GEMINI_MODEL` above it. Default is off, `ROUTE_AT=0`. The fidelity check always uses
-`GEMINI_MODEL` so the judge is never weaker than the compressor. The response to
-`POST /api/capsule` includes `model` so the UI reports which one ran. Measured on a 14k
-character transcript, three runs each: 3.6-flash 10.6 to 13.2s, 3.1-flash-lite 2.6 to 3.1s
-with equal or fuller capsules. That held until the `literals` field was added: the lite model
-then dropped every long URL in five of five runs and returned malformed JSON in two of six
-calls, while the full model kept all 23 literals in three of three at about 11s. Exact values
-are the point of the product, so the router defaults to off.
+**Model router.** `route(text)` in `gemini.py` picks `GEMINI_LITE` for transcripts at or
+below `ROUTE_AT` characters and `GEMINI_MODEL` above it. Default is off, `ROUTE_AT=0`. The
+fidelity check always uses `GEMINI_MODEL` so the check is never weaker than the compressor.
+The response to `POST /api/capsule` includes `model` so the UI reports which one ran.
+Measured on a 14k character transcript, three runs each: 3.6-flash 10.6 to 13.2s,
+3.1-flash-lite 2.6 to 3.1s with equal or fuller capsules. That held until the `literals`
+field was added: the lite model then dropped every long URL in five of five runs and
+returned malformed JSON in two of six calls, while the full model kept all 23 literals in
+three of three at about 11s. Exact values are the point of the product, so the router
+defaults to off.
 
 **Literals.** The capsule has a `literals` list for every exact URL, id, file path, command,
 env var name, model name and config string, verbatim. It exists because a resumed session
@@ -215,9 +236,7 @@ private or foreign id is a 404 before any model call. The extraction prompt then
 the parent capsule as prior context with the instruction to carry every decision, ruled
 out approach, constraint and literal forward unless the new transcript reverses it, so the
 child stands alone. The row stores `parent`, `GET /api/capsule/{id}` returns it, and the
-page shows a "Chain from current capsule" box once a capsule is loaded. Measured on the
-sample chat plus a follow up: the child kept both rejections and both constraints from the
-parent and added the new decisions.
+page shows a "Chain from current capsule" box once a capsule is loaded.
 
 **Export file parser.** Client side only, `conversations` and `flatten` in `index.html`.
 Accepts a `.txt`, `.md` or `.json` file. Understands a full ChatGPT `conversations.json`
@@ -226,35 +245,78 @@ export (array with `name` and `chat_messages`), a flat `messages` array, or a si
 and content object. Anything else is plain text. With more than one conversation a select
 appears, newest first with an estimated token count per entry, and the newest is loaded by
 default. Text over 120,000 characters keeps the last 120,000, the oldest part is dropped,
-and the note says so, because the recent end is what a resume needs. Unit checked in node
-against synthetic ChatGPT, Claude and messages exports.
+and the note says so, because the recent end is what a resume needs.
 
 **Capsule search.** `POST /api/capsule` embeds the capsule JSON with `GEMINI_EMBED` and
-stores the vector in an `emb` column added by a pragma check in `db()`. `GET
-/api/search?q=` embeds the query and does a linear cosine scan in pure Python over every
-row, returning the top five as `{id, title, goal, score}`. Embedding failure is
-non fatal, the capsule is stored with a null vector and skipped by search.
+stores the vector in the `emb` column. `GET /api/search?q=` embeds the query and does a
+linear cosine scan in pure Python over the caller's rows, returning the top five as
+`{id, title, goal, score}`. Embedding failure is non fatal, the capsule is stored with a
+null vector and skipped by search.
+
+**Supabase Auth on MCP.** `POST /mcp` requires a Supabase access token as
+`Authorization: Bearer <jwt>` or `/mcp/<jwt>`. Verified with `pyjwt[crypto]` against
+`SUPABASE_URL`'s JWKS (`PyJWKClient`, cached), not a shared secret, Supabase signs with
+per project asymmetric keys. Owner is the JWT `sub` claim. Replaced the earlier
+`MCP_TOKENS` shared secret scheme entirely, see `CONSTRAINTS.md`.
+
+**OAuth discovery for claude.ai's connector.** Claude Code and Claude Desktop take a
+pasted bearer token, but claude.ai's website custom connectors are OAuth only. `GET
+/.well-known/oauth-protected-resource` and the `resource_metadata` hint on `/mcp`'s 401
+point an OAuth capable MCP client at Supabase's own OAuth 2.1 Server, which handles
+authorization code plus PKCE and dynamic client registration. `apps/web`'s
+`/oauth/consent` is the consent screen Supabase redirects to, the one piece of that flow
+we build ourselves. The token it ends up issuing is the same kind of Supabase JWT, `/mcp`
+does not know or care which path a token came from.
+
+## apps/web
+
+Next.js App Router, TypeScript, Tailwind. Talks to Supabase directly with
+`@supabase/supabase-js` and `@supabase/ssr`, never proxies through `apps/api`.
+
+| Route | Behaviour |
+|---|---|
+| `/` | landing page, explains the product, links to signup and login |
+| `/signup` | server component, redirects to `/account` if already signed in, otherwise renders `signup-form.tsx` (email and password against `supabase.auth.signUp`) |
+| `/login` | server component, redirects to `?next=` or `/account` if already signed in, otherwise renders `login-form.tsx` (email and password against `supabase.auth.signInWithPassword`, honors `?next=` to return to a pending OAuth consent request after logging in) |
+| `/account` | server component, redirects to `/login` if there is no session, otherwise shows the current access token and a ready to paste MCP client config pointed at `NEXT_PUBLIC_API_URL` |
+| `/oauth/consent` | server component, the consent screen for Supabase's OAuth 2.1 Server. Redirects to `/login?next=...` if there is no session, otherwise reads `authorization_id` from the query string, calls `supabase.auth.oauth.getAuthorizationDetails`, shows the requesting client's name and scopes, and hands off to `consent-actions.tsx` for the Approve/Deny buttons (`approveAuthorization`/`denyAuthorization`, `skipBrowserRedirect: true`, then a manual redirect to the returned `redirect_url`) |
+
+`proxy.ts` (the Next.js 16 proxy file, formerly `middleware.ts`) refreshes the Supabase
+session cookie on every request via `lib/supabase/middleware.ts`. Does not yet host the
+capsule creation UI, transcript paste and rehydration still live only in
+`apps/api/app/index.html`.
 
 ## Deliberately out of scope
 
-Browser extension. Accounts and auth. Capsule chaining across sessions. Team sharing.
-Postgres. Anything with a queue. The MCP server, export parsing and capsule search were
-out of scope for the demo and shipped the same afternoon once the demo build was frozen.
-
-Reasons are in RESEARCH.md. The short version: MCP cannot be judged in a browser, and the
-rubric awards 20 points for a judge opening a Render URL and using the product directly.
+Browser extension. Team sharing. Anything with a queue. A login wall on the web capsule
+tool. Long lived or refreshable MCP tokens. Porting the capsule creation UI into
+`apps/web`. Reasons for the ones that are product decisions rather than time constraints
+are in `RESEARCH.md` and `CONSTRAINTS.md`.
 
 ## Environment
 
+`apps/api`:
+
 | Var | Required | Default |
 |---|---|---|
+| `DATABASE_URL` | yes | none, startup fails without it |
+| `SUPABASE_URL` | yes | none, used to fetch JWKS for MCP token verification and in the protected resource metadata's `authorization_servers` |
+| `PUBLIC_API_URL` | yes | none, used as `resource` in the metadata and in the 401 `WWW-Authenticate` header |
 | `GEMINI_API_KEY` | yes | none, `/healthz` reports false |
 | `GEMINI_MODEL` | no | `gemini-3.6-flash`, used above `ROUTE_AT` and for the fidelity check |
 | `GEMINI_LITE` | no | `gemini-3.1-flash-lite`, used at or below `ROUTE_AT` |
 | `ROUTE_AT` | no | `0`, which sends everything to `GEMINI_MODEL`. Set to a character count to route shorter transcripts to `GEMINI_LITE` |
 | `GEMINI_EMBED` | no | `gemini-embedding-001` |
-| `MCP_TOKENS` | for MCP | none. Comma separated bearer tokens, one per user. With none set every MCP call is 401 |
-| `DB_PATH` | no | `/tmp/carryover.db` |
-| `PORT` | set by Render | 10000 |
+| `PORT` | set by the platform | 10000 |
 
-Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+Start command: `uv run --frozen uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+
+`apps/web`:
+
+| Var | Required | Default |
+|---|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | yes | none |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | yes | none |
+| `NEXT_PUBLIC_API_URL` | no | `https://carryover-kxq7.onrender.com`, the `apps/api` deploy the account page points MCP clients at |
+
+Build: `npm install && npm run build`. Start: `npm run start`.

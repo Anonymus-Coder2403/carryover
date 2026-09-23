@@ -1,5 +1,9 @@
 # Build plan, 12:35 to 14:00 IST
 
+Historical. This is the hackathon timebox from 12 Sep 2026, kept as a record of how the
+app was originally built. It is not a live plan, see `AGENTS.md` and `SPEC.md` for the
+current state of the repo.
+
 Submit by 13:45. Demo at 14:00. Team of three.
 
 ## Rule that overrides everything
